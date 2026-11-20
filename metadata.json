@@ -1,0 +1,6 @@
+{
+  "name": "CourtSync — MainBareng Bandung",
+  "description": "Platform booking lapangan olahraga, patungan split bill, matchmaking Open Play (Mabar), dan manajemen mitra GOR untuk komunitas olahraga di Bandung.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

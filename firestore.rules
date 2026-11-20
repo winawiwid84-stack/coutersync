@@ -1,0 +1,557 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Hardened Primitives
+    // -------------------------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isEmailVerified() && request.auth.token.email == 'winawiwid84@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isEmailVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation Blueprints (Anti-Update-Gap)
+    // -------------------------------------------------------------------------
+    function isValidVenue(data) {
+      return data.keys().hasAll([
+          'name', 'sport', 'area', 'address', 'rating', 'reviewCount',
+          'imageUrl', 'openHour', 'closeHour', 'facilities', 'bankAccount',
+          'pricingEnabled', 'pricingDays', 'pricingStartHour', 'pricingEndHour',
+          'pricingDiscountPercent', 'pricingLabel', 'isPublic', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'name', 'sport', 'area', 'address', 'rating', 'reviewCount',
+          'imageUrl', 'openHour', 'closeHour', 'facilities', 'bankAccount',
+          'pricingEnabled', 'pricingDays', 'pricingStartHour', 'pricingEndHour',
+          'pricingDiscountPercent', 'pricingLabel', 'isPublic', 'updatedAt'
+        ])
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && data.sport in ['Badminton', 'Futsal', 'Mini Soccer', 'Padel']
+        && data.area is string && data.area.size() >= 2 && data.area.size() <= 80
+        && data.address is string && data.address.size() >= 5 && data.address.size() <= 240
+        && data.rating is number && data.rating >= 0 && data.rating <= 5
+        && data.reviewCount is int && data.reviewCount >= 0 && data.reviewCount <= 100000
+        && data.imageUrl is string && data.imageUrl.size() >= 5 && data.imageUrl.size() <= 300
+        && data.openHour is int && data.openHour >= 0 && data.openHour <= 23
+        && data.closeHour is int && data.closeHour >= 1 && data.closeHour <= 24
+        && data.facilities is list && data.facilities.size() <= 12
+        && (data.facilities.size() == 0 || data.facilities[0] is string)
+        && data.bankAccount is string && data.bankAccount.size() >= 3 && data.bankAccount.size() <= 140
+        && data.pricingEnabled is bool
+        && data.pricingDays is list && data.pricingDays.size() <= 7
+        && (data.pricingDays.size() == 0 || data.pricingDays[0] is int)
+        && data.pricingStartHour is int && data.pricingStartHour >= 8 && data.pricingStartHour <= 21
+        && data.pricingEndHour is int && data.pricingEndHour >= 9 && data.pricingEndHour <= 22
+        && data.pricingDiscountPercent is int && data.pricingDiscountPercent >= 0 && data.pricingDiscountPercent <= 80
+        && data.pricingLabel is string && data.pricingLabel.size() >= 1 && data.pricingLabel.size() <= 80
+        && data.isPublic is bool
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCourt(data) {
+      return data.keys().hasAll(['venueId', 'name', 'surface', 'indoor', 'basePricePerHour', 'isPublic'])
+        && data.keys().hasOnly(['venueId', 'name', 'surface', 'indoor', 'basePricePerHour', 'isPublic'])
+        && isValidId(data.venueId)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 100
+        && data.surface is string && data.surface.size() >= 2 && data.surface.size() <= 100
+        && data.indoor is bool
+        && data.basePricePerHour is int && data.basePricePerHour > 0 && data.basePricePerHour <= 20000000
+        && data.isPublic is bool;
+    }
+
+    function isValidBooking(data) {
+      return data.keys().hasAll([
+          'bookingCode', 'venueId', 'courtId', 'date', 'hours',
+          'customerName', 'customerPhone', 'source', 'paymentMethod',
+          'totalPrice', 'discountApplied', 'paymentMode', 'status',
+          'ownerUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'bookingCode', 'venueId', 'courtId', 'date', 'hours',
+          'customerName', 'customerPhone', 'source', 'paymentMethod',
+          'totalPrice', 'discountApplied', 'paymentMode', 'splitLink',
+          'status', 'ownerUid', 'openPlayId', 'notes', 'createdAt', 'updatedAt'
+        ])
+        && data.bookingCode is string && data.bookingCode.size() >= 6 && data.bookingCode.size() <= 32
+        && data.bookingCode.matches('^[A-Z0-9\\-]+$')
+        && isValidId(data.venueId)
+        && isValidId(data.courtId)
+        && data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.hours is list && data.hours.size() >= 1 && data.hours.size() <= 6
+        && data.hours[0] is int && data.hours[0] >= 8 && data.hours[0] <= 21
+        && data.customerName is string && data.customerName.size() >= 2 && data.customerName.size() <= 100
+        && data.customerPhone is string && data.customerPhone.size() >= 6 && data.customerPhone.size() <= 30
+        && data.source in ['online', 'member', 'walkin']
+        && data.paymentMethod in ['QRIS', 'VA_BCA', 'VA_MANDIRI', 'VA_BNI', 'KASIR_TUNAI']
+        && data.totalPrice is int && data.totalPrice >= 0 && data.totalPrice <= 50000000
+        && data.discountApplied is int && data.discountApplied >= 0 && data.discountApplied <= 50000000
+        && data.paymentMode in ['full', 'split']
+        && (!('splitLink' in data) || (data.splitLink is string && data.splitLink.size() <= 200))
+        && data.status in ['confirmed', 'pending_split', 'cancelled']
+        && isValidId(data.ownerUid)
+        && (!('openPlayId' in data) || (data.openPlayId is string && data.openPlayId.size() <= 128))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 300))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBookingSlot(data) {
+      return data.keys().hasAll(['venueId', 'courtId', 'date', 'hour', 'bookingId', 'source', 'ownerUid', 'createdAt'])
+        && data.keys().hasOnly(['venueId', 'courtId', 'date', 'hour', 'bookingId', 'source', 'ownerUid', 'createdAt'])
+        && isValidId(data.venueId)
+        && isValidId(data.courtId)
+        && data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.hour is int && data.hour >= 8 && data.hour <= 21
+        && isValidId(data.bookingId)
+        && data.source in ['online', 'member', 'walkin']
+        && isValidId(data.ownerUid)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidParticipant(data) {
+      return data.keys().hasAll(['bookingId', 'ownerUid', 'name', 'amount', 'paid', 'isHost', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['bookingId', 'ownerUid', 'name', 'amount', 'paid', 'paidAt', 'isHost', 'paymentRef', 'createdAt', 'updatedAt'])
+        && isValidId(data.bookingId)
+        && isValidId(data.ownerUid)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.amount is int && data.amount >= 0 && data.amount <= 50000000
+        && data.paid is bool
+        && (!('paidAt' in data) || (data.paidAt is string && data.paidAt.size() <= 64))
+        && data.isHost is bool
+        && (!('paymentRef' in data) || (data.paymentRef is string && data.paymentRef.size() <= 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidOpenPlay(data) {
+      return data.keys().hasAll([
+          'title', 'sport', 'venueId', 'courtId', 'date', 'hours',
+          'hostName', 'ownerUid', 'skillLevel', 'maxPlayers', 'currentPlayers',
+          'costPerPerson', 'description', 'participantUids', 'participantNames',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'bookingId', 'title', 'sport', 'venueId', 'courtId', 'date', 'hours',
+          'hostName', 'ownerUid', 'skillLevel', 'maxPlayers', 'currentPlayers',
+          'costPerPerson', 'description', 'participantUids', 'participantNames',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && (!('bookingId' in data) || (data.bookingId is string && data.bookingId.size() <= 128))
+        && data.title is string && data.title.size() >= 3 && data.title.size() <= 140
+        && data.sport in ['Badminton', 'Futsal', 'Mini Soccer', 'Padel']
+        && isValidId(data.venueId)
+        && isValidId(data.courtId)
+        && data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.hours is list && data.hours.size() >= 1 && data.hours.size() <= 6
+        && data.hours[0] is int && data.hours[0] >= 8 && data.hours[0] <= 21
+        && data.hostName is string && data.hostName.size() >= 2 && data.hostName.size() <= 80
+        && isValidId(data.ownerUid)
+        && data.skillLevel in ['Pemula', 'Menengah', 'Mahir']
+        && data.maxPlayers is int && data.maxPlayers >= 2 && data.maxPlayers <= 24
+        && data.currentPlayers is int && data.currentPlayers >= 1 && data.currentPlayers <= data.maxPlayers
+        && data.costPerPerson is int && data.costPerPerson >= 0 && data.costPerPerson <= 5000000
+        && data.description is string && data.description.size() <= 400
+        && data.participantUids is list && data.participantUids.size() >= 1 && data.participantUids.size() <= 24
+        && data.participantUids[0] is string
+        && data.participantNames is list && data.participantNames.size() >= 1 && data.participantNames.size() <= 24
+        && data.participantNames[0] is string
+        && data.status in ['open', 'full', 'closed']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLobbyMessage(data) {
+      return data.keys().hasAll(['sessionId', 'senderUid', 'senderName', 'text', 'isSystem', 'createdAt'])
+        && data.keys().hasOnly(['sessionId', 'senderUid', 'senderName', 'text', 'isSystem', 'createdAt'])
+        && isValidId(data.sessionId)
+        && isValidId(data.senderUid)
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 500
+        && data.isSystem is bool
+        && data.createdAt is timestamp;
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'displayName', 'email', 'accountType', 'verifiedMitra', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'email', 'phone', 'accountType', 'verifiedMitra',
+          'favoriteSport', 'skillLevel', 'venueName', 'venueArea', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 100
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 120
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 30))
+        && data.accountType in ['player', 'mitra_gor']
+        && data.verifiedMitra is bool
+        && (!('favoriteSport' in data) || data.favoriteSport in ['Badminton', 'Futsal', 'Mini Soccer', 'Padel'])
+        && (!('skillLevel' in data) || data.skillLevel in ['Pemula', 'Menengah', 'Mahir'])
+        && (!('venueName' in data) || (data.venueName is string && data.venueName.size() <= 120))
+        && (!('venueArea' in data) || (data.venueArea is string && data.venueArea.size() <= 80))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidContentDraft(data) {
+      return data.keys().hasAll([
+          'ownerUid', 'roleMode', 'platform', 'tone', 'prompt',
+          'mediaType', 'title', 'hook', 'caption', 'hashtags', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerUid', 'roleMode', 'venueId', 'platform', 'tone', 'prompt',
+          'mediaType', 'mediaFileName', 'title', 'hook', 'caption',
+          'whatsappBroadcast', 'cta', 'mediaAnalysis', 'bestPostingTime',
+          'hashtags', 'visualTips', 'videoScriptJson', 'createdAt'
+        ])
+        && isValidId(data.ownerUid)
+        && data.roleMode in ['B2C', 'B2B']
+        && (!('venueId' in data) || (data.venueId is string && data.venueId.size() <= 128))
+        && data.platform is string && data.platform.size() >= 2 && data.platform.size() <= 60
+        && data.tone is string && data.tone.size() >= 2 && data.tone.size() <= 60
+        && data.prompt is string && data.prompt.size() >= 2 && data.prompt.size() <= 1000
+        && data.mediaType in ['none', 'image', 'video']
+        && (!('mediaFileName' in data) || (data.mediaFileName is string && data.mediaFileName.size() <= 180))
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 200
+        && data.hook is string && data.hook.size() >= 2 && data.hook.size() <= 500
+        && data.caption is string && data.caption.size() >= 2 && data.caption.size() <= 3500
+        && (!('whatsappBroadcast' in data) || (data.whatsappBroadcast is string && data.whatsappBroadcast.size() <= 2000))
+        && (!('cta' in data) || (data.cta is string && data.cta.size() <= 400))
+        && (!('mediaAnalysis' in data) || (data.mediaAnalysis is string && data.mediaAnalysis.size() <= 1500))
+        && (!('bestPostingTime' in data) || (data.bestPostingTime is string && data.bestPostingTime.size() <= 300))
+        && data.hashtags is list && data.hashtags.size() <= 20
+        && (data.hashtags.size() == 0 || data.hashtags[0] is string)
+        && (!('visualTips' in data) || (data.visualTips is list && data.visualTips.size() <= 10 && (data.visualTips.size() == 0 || data.visualTips[0] is string)))
+        && (!('videoScriptJson' in data) || (data.videoScriptJson is string && data.videoScriptJson.size() <= 8000))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidVenueReview(data) {
+      return data.keys().hasAll([
+          'venueId', 'bookingId', 'bookingCode', 'courtName', 'ownerUid',
+          'reviewerName', 'rating', 'comment', 'tags', 'playedDate',
+          'isPublic', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'venueId', 'bookingId', 'bookingCode', 'courtName', 'ownerUid',
+          'reviewerName', 'rating', 'comment', 'tags', 'playedDate',
+          'isPublic', 'createdAt'
+        ])
+        && isValidId(data.venueId)
+        && isValidId(data.bookingId)
+        && data.bookingCode is string && data.bookingCode.size() >= 4 && data.bookingCode.size() <= 32
+        && data.courtName is string && data.courtName.size() >= 2 && data.courtName.size() <= 100
+        && isValidId(data.ownerUid)
+        && data.reviewerName is string && data.reviewerName.size() >= 2 && data.reviewerName.size() <= 100
+        && data.rating is int && data.rating >= 1 && data.rating <= 5
+        && data.comment is string && data.comment.size() >= 3 && data.comment.size() <= 600
+        && data.tags is list && data.tags.size() <= 8
+        && (data.tags.size() == 0 || data.tags[0] is string)
+        && data.playedDate is string && data.playedDate.size() == 10 && data.playedDate.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.isPublic is bool
+        && data.createdAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection Rules
+    // -------------------------------------------------------------------------
+
+    // 1. Venues (Public Bandung Catalog + Dynamic Pricing Rules)
+    match /venues/{venueId} {
+      allow get: if isValidId(venueId);
+      allow list: if resource.data.isPublic == true;
+      allow create: if isAdmin()
+        && isValidId(venueId)
+        && isValidVenue(incoming())
+        && incoming().isPublic == true
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(venueId)
+        && isValidVenue(incoming())
+        && incoming().isPublic == existing().isPublic
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'pricingEnabled', 'pricingDays', 'pricingStartHour', 'pricingEndHour',
+          'pricingDiscountPercent', 'pricingLabel', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // 2. Courts (Public Catalog linked to Venues)
+    match /courts/{courtId} {
+      allow get: if isValidId(courtId);
+      allow list: if resource.data.isPublic == true;
+      allow create: if isAdmin()
+        && isValidId(courtId)
+        && isValidCourt(incoming())
+        && incoming().isPublic == true
+        && existsAfter(/databases/$(database)/documents/venues/$(incoming().venueId));
+      allow update: if isAdmin()
+        && isValidId(courtId)
+        && isValidCourt(incoming())
+        && incoming().venueId == existing().venueId
+        && incoming().isPublic == existing().isPublic
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'surface', 'basePricePerHour']);
+      allow delete: if false;
+    }
+
+    // 3. Bookings (PII-Isolated: Owner or Admin ONLY)
+    match /bookings/{bookingId} {
+      allow get: if isSignedIn() && isValidId(bookingId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (existing().ownerUid == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isEmailVerified()
+        && isValidId(bookingId)
+        && isValidBooking(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (incoming().source == 'online' || isAdmin())
+        && exists(/databases/$(database)/documents/venues/$(incoming().venueId))
+        && exists(/databases/$(database)/documents/courts/$(incoming().courtId));
+      allow update: if isEmailVerified()
+        && isValidId(bookingId)
+        && isValidBooking(incoming())
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().venueId == existing().venueId
+        && incoming().courtId == existing().courtId
+        && incoming().bookingCode == existing().bookingCode
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().status != 'cancelled'
+            && existing().ownerUid == request.auth.uid
+            && (
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) ||
+              incoming().diff(existing()).affectedKeys().hasOnly(['openPlayId', 'updatedAt'])
+            )
+          )
+        );
+      allow delete: if false;
+    }
+
+    // 4. Booking Slots (Public PII-Free Atomic Anti-Double-Booking Locks)
+    match /booking_slots/{slotId} {
+      allow get: if isValidId(slotId);
+      allow list: if resource.data.hour >= 8 && resource.data.hour <= 21;
+      allow create: if isEmailVerified()
+        && isValidId(slotId)
+        && isValidBookingSlot(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && slotId == (incoming().courtId + '_' + incoming().date + '_' + string(incoming().hour))
+        && (incoming().source == 'online' || isAdmin())
+        && exists(/databases/$(database)/documents/venues/$(incoming().venueId))
+        && exists(/databases/$(database)/documents/courts/$(incoming().courtId))
+        && existsAfter(/databases/$(database)/documents/bookings/$(incoming().bookingId));
+      allow update: if false;
+      allow delete: if isEmailVerified()
+        && isValidId(slotId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+    }
+
+    // 5. Booking Participants (Split Bill Real-Time Status)
+    match /booking_participants/{participantId} {
+      allow get: if isSignedIn() && isValidId(participantId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (existing().ownerUid == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isEmailVerified()
+        && isValidId(participantId)
+        && isValidParticipant(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/bookings/$(incoming().bookingId));
+      allow update: if isEmailVerified()
+        && isValidId(participantId)
+        && isValidParticipant(incoming())
+        && incoming().bookingId == existing().bookingId
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().amount == existing().amount
+        && incoming().isHost == existing().isHost
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (existing().ownerUid == request.auth.uid || isAdmin())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['paid', 'paidAt', 'paymentRef', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // 6. Open Play / Mabar Rooms
+    match /open_plays/{sessionId} {
+      allow get: if isValidId(sessionId);
+      allow list: if resource.data.status in ['open', 'full', 'closed'];
+      allow create: if isEmailVerified()
+        && isValidId(sessionId)
+        && isValidOpenPlay(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && incoming().status == 'open'
+        && request.auth.uid in incoming().participantUids
+        && exists(/databases/$(database)/documents/venues/$(incoming().venueId))
+        && exists(/databases/$(database)/documents/courts/$(incoming().courtId));
+      allow update: if isEmailVerified()
+        && isValidId(sessionId)
+        && isValidOpenPlay(incoming())
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().venueId == existing().venueId
+        && incoming().courtId == existing().courtId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().status == 'open'
+            && existing().currentPlayers < existing().maxPlayers
+            && !(request.auth.uid in existing().participantUids)
+            && request.auth.uid in incoming().participantUids
+            && incoming().currentPlayers == existing().currentPlayers + 1
+            && incoming().participantUids.size() == existing().participantUids.size() + 1
+            && incoming().participantNames.size() == existing().participantNames.size() + 1
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'currentPlayers', 'participantUids', 'participantNames', 'status', 'updatedAt'
+            ])
+          ) ||
+          (
+            existing().ownerUid == request.auth.uid
+            && existing().status != 'closed'
+            && incoming().status == 'closed'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if false;
+
+      // 6b. Temporary Lobby Chat Subcollection (Master Gate via Parent Open Play)
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(sessionId) && isValidId(messageId)
+          && exists(/databases/$(database)/documents/open_plays/$(sessionId))
+          && (
+            request.auth.uid in get(/databases/$(database)/documents/open_plays/$(sessionId)).data.participantUids ||
+            isAdmin()
+          );
+        allow list: if isSignedIn()
+          && resource.data.sessionId == sessionId;
+        allow create: if isEmailVerified()
+          && isValidId(sessionId)
+          && isValidId(messageId)
+          && isValidLobbyMessage(incoming())
+          && incoming().sessionId == sessionId
+          && incoming().senderUid == request.auth.uid
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/open_plays/$(sessionId))
+          && (
+            request.auth.uid in get(/databases/$(database)/documents/open_plays/$(sessionId)).data.participantUids ||
+            isAdmin()
+          );
+        allow update, delete: if false;
+      }
+    }
+
+    // 7. Admins Role Registry
+    match /admins/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && request.auth.uid == uid;
+      allow list, create, update, delete: if false;
+    }
+
+    // 8. User Profiles (PII-Isolated: Owner or Admin ONLY; verifiedMitra protected from self-escalation)
+    match /users/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && (request.auth.uid == uid || isAdmin());
+      allow list: if isSignedIn() && (existing().uid == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isEmailVerified()
+        && isValidId(uid)
+        && request.auth.uid == uid
+        && isValidUserProfile(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().email == request.auth.token.email
+        && (incoming().verifiedMitra == false || isAdmin())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isEmailVerified()
+        && isValidId(uid)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            request.auth.uid == uid
+            && incoming().verifiedMitra == existing().verifiedMitra
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName', 'phone', 'accountType', 'favoriteSport',
+              'skillLevel', 'venueName', 'venueArea', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if false;
+    }
+
+    // 9. Saved AI Content Agent Drafts (Owner-scoped only; no binary media blobs)
+    match /content_drafts/{draftId} {
+      allow get: if isSignedIn() && isValidId(draftId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (existing().ownerUid == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isEmailVerified()
+        && isValidId(draftId)
+        && isValidContentDraft(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isEmailVerified()
+        && isValidId(draftId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+    }
+
+    // 10. Venue Reviews & 1-5 Star Ratings (Public Read, Verified Player Create, Immutable)
+    match /reviews/{reviewId} {
+      allow get: if isValidId(reviewId);
+      allow list: if resource.data.isPublic == true;
+      allow create: if isEmailVerified()
+        && isValidId(reviewId)
+        && isValidVenueReview(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().isPublic == true
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isEmailVerified()
+        && isValidId(reviewId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+    }
+  }
+}
