@@ -15,7 +15,7 @@ export interface UserProfile {
   phone?: string;
   accountType: UserRole;
   verifiedMitra: boolean;
-  favoriteSport?: SportCategory;
+  favoriteSport?: string;
   skillLevel?: SkillLevel;
   venueName?: string;
   venueArea?: string;
@@ -23,7 +23,7 @@ export interface UserProfile {
 
 export type B2CTab = 'explore' | 'mabar' | 'studio' | 'tickets';
 
-export type B2BTab = 'calendar' | 'pricing' | 'reviews' | 'studio' | 'revenue';
+export type B2BTab = 'calendar' | 'pricing' | 'reviews' | 'studio' | 'proposal' | 'revenue';
 
 export type ContentPlatform =
   | 'Instagram Reels'
@@ -93,6 +93,7 @@ export interface Court {
   surface: string;
   indoor: boolean;
   basePricePerHour: number; // in IDR
+  ownerUid?: string;
 }
 
 export interface Venue {
@@ -109,6 +110,7 @@ export interface Venue {
   facilities: string[];
   courts: Court[];
   bankAccount: string;
+  ownerUid?: string;
 }
 
 export interface SplitParticipant {
@@ -141,6 +143,21 @@ export interface Booking {
   isUserBooking?: boolean;
   openPlayId?: string;
   notes?: string;
+  ownerUid?: string;
+  venueOwnerUid?: string;
+  checkedInAt?: string;
+  persistedToCloud?: boolean;
+}
+
+export interface BookingSlotLock {
+  id: string;
+  venueId: string;
+  courtId: string;
+  date: string;
+  hour: number;
+  bookingId: string;
+  source: BookingSource;
+  ownerUid: string;
 }
 
 export interface OpenPlaySession {
@@ -159,6 +176,8 @@ export interface OpenPlaySession {
   costPerPerson: number;
   description: string;
   participants: string[];
+  participantUids?: string[];
+  status?: 'open' | 'full' | 'closed';
   joinedByCurrentUser: boolean;
 }
 

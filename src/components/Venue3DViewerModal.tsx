@@ -917,10 +917,10 @@ export const Venue3DViewerModal: React.FC<Venue3DViewerModalProps> = ({
             Tur 3D Lapangan · {activeSport}
           </p>
           <h2 className="font-display font-bold text-sm sm:text-base text-white tracking-tight mt-0.5">
-            {matchingVenue.name}
+            {matchingVenue ? matchingVenue.name : `Standar Lapangan ${activeSport} Bandung`}
           </h2>
           <p className="text-[11px] text-slate-300 mt-0.5">
-            Seret untuk memutar · Gulir untuk zoom · {matchingVenue.area}
+            Seret untuk memutar · Gulir untuk zoom · {matchingVenue ? matchingVenue.area : 'Bandung Raya'}
           </p>
         </div>
 
@@ -980,17 +980,28 @@ export const Venue3DViewerModal: React.FC<Venue3DViewerModalProps> = ({
                   </>
                 )}
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onBookVenue(matchingVenue.id);
-                  onClose();
-                }}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-display font-bold text-xs rounded-lg transition-colors whitespace-nowrap"
-              >
-                <CalendarCheck className="w-3.5 h-3.5" />
-                <span>Booking GOR Ini</span>
-              </button>
+              {matchingVenue ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onBookVenue(matchingVenue.id);
+                    onClose();
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-display font-bold text-xs rounded-lg transition-colors whitespace-nowrap"
+                >
+                  <CalendarCheck className="w-3.5 h-3.5" />
+                  <span>Booking GOR Ini</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-display font-bold text-xs rounded-lg transition-colors whitespace-nowrap"
+                >
+                  <CalendarCheck className="w-3.5 h-3.5" />
+                  <span>Kembali ke Jelajah</span>
+                </button>
+              )}
             </div>
           </div>
 

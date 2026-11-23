@@ -2,12 +2,14 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  Content,
-  FunctionDeclaration,
   GoogleGenAI,
-  Part,
   Type,
   createPartFromUri,
+} from '@google/genai';
+import type {
+  Content,
+  FunctionDeclaration,
+  Part,
 } from '@google/genai';
 import {
   BANDUNG_VENUES,

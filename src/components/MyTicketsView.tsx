@@ -1,5 +1,5 @@
 import React from 'react';
-import { Star, Ticket } from 'lucide-react';
+import { LogIn, Star, Ticket } from 'lucide-react';
 import { Booking, Venue, VenueReview } from '../types/courtsync';
 import { ETicketCard } from './ETicketCard';
 
@@ -7,9 +7,12 @@ interface MyTicketsViewProps {
   bookings: Booking[];
   venues: Venue[];
   reviews: VenueReview[];
-  onSimulateParticipantPay: (bookingId: string, participantId: string) => void;
+  isSignedIn: boolean;
+  onPromptLogin: () => void;
+  onMarkParticipantPaid: (bookingId: string, participantId: string) => void;
   onOpenMabarChat: (openPlayId: string) => void;
   onOpenReview: (booking: Booking, venue: Venue) => void;
+  onCancelBooking: (bookingId: string) => Promise<void>;
   onExploreClick: () => void;
 }
 
@@ -17,9 +20,12 @@ export const MyTicketsView: React.FC<MyTicketsViewProps> = ({
   bookings,
   venues,
   reviews,
-  onSimulateParticipantPay,
+  isSignedIn,
+  onPromptLogin,
+  onMarkParticipantPaid,
   onOpenMabarChat,
   onOpenReview,
+  onCancelBooking,
   onExploreClick,
 }) => {
   const userBookings = bookings.filter((b) => b.isUserBooking && b.status !== 'cancelled');
@@ -31,7 +37,7 @@ export const MyTicketsView: React.FC<MyTicketsViewProps> = ({
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-xs font-semibold text-emerald-700">
-            E-Ticket, Riwayat Patungan &amp; Ulasan Venue
+            E-Ticket Cloud, Riwayat Patungan &amp; Ulasan Venue
           </p>
           <h1 className="font-display font-extrabold text-2xl text-slate-900 tracking-tight mt-0.5">
             Tiket Aktif Saya
@@ -46,64 +52,90 @@ export const MyTicketsView: React.FC<MyTicketsViewProps> = ({
         </button>
       </div>
 
-      {pendingReviewCount > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-amber-400 text-slate-950 flex items-center justify-center shrink-0">
-              <Star className="w-4 h-4 fill-slate-950" />
-            </div>
-            <div>
-              <p className="text-xs font-bold text-slate-900">
-                Ada {pendingReviewCount} sesi booking yang siap diberi ulasan bintang 1–5
-              </p>
-              <p className="text-xs text-slate-600">
-                Feedback langsungmu membantu Mitra GOR Bandung meningkatkan kualitas lapangan dan fasilitas.
-              </p>
-            </div>
+      {!isSignedIn ? (
+        <div className="bg-white border border-slate-200 rounded-2xl p-10 sm:p-12 text-center space-y-4">
+          <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto">
+            <LogIn className="w-6 h-6" />
           </div>
-        </div>
-      )}
-
-      {userBookings.length === 0 ? (
-        <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-3">
-          <div className="w-12 h-12 rounded-xl bg-slate-100 text-slate-500 flex items-center justify-center mx-auto">
-            <Ticket className="w-6 h-6" />
+          <div className="space-y-1.5">
+            <h2 className="font-display font-bold text-lg text-slate-900">
+              Masuk untuk Melihat E-Ticket Cloud Anda
+            </h2>
+            <p className="text-sm text-slate-500 max-w-md mx-auto">
+              Seluruh tiket QR, status patungan Split Bill, dan riwayat ulasan venue tersimpan aman di akun CourtSync Anda.
+            </p>
           </div>
-          <h2 className="font-display font-bold text-lg text-slate-900">
-            Belum ada E-Ticket aktif
-          </h2>
-          <p className="text-sm text-slate-500 max-w-md mx-auto">
-            Booking lapangan di Bandung atau gabung sesi Open Play untuk mendapatkan E-Ticket QR otomatis di sini.
-          </p>
           <button
             type="button"
-            onClick={onExploreClick}
-            className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-display font-bold text-xs rounded-xl transition-colors"
+            onClick={onPromptLogin}
+            className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-display font-bold text-xs rounded-xl transition-colors inline-flex items-center gap-2"
           >
-            Cari Lapangan Sekarang
+            <LogIn className="w-4 h-4" />
+            Masuk / Daftar Akun
           </button>
         </div>
       ) : (
-        <div className="space-y-5">
-          {userBookings.map((booking) => {
-            const venue = venues.find((v) => v.id === booking.venueId);
-            if (!venue) return null;
-            const existingReview = reviews.find((r) => r.bookingId === booking.id);
-            return (
-              <ETicketCard
-                key={booking.id}
-                booking={booking}
-                venue={venue}
-                existingReview={existingReview}
-                onSimulateParticipantPay={onSimulateParticipantPay}
-                onOpenMabarChat={onOpenMabarChat}
-                onOpenReview={onOpenReview}
-              />
-            );
-          })}
-        </div>
+        <>
+          {pendingReviewCount > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-amber-400 text-slate-950 flex items-center justify-center shrink-0">
+                  <Star className="w-4 h-4 fill-slate-950" />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-slate-900">
+                    Ada {pendingReviewCount} sesi booking yang siap diberi ulasan bintang 1–5
+                  </p>
+                  <p className="text-xs text-slate-600">
+                    Feedback langsungmu membantu Mitra GOR Bandung meningkatkan kualitas lapangan dan fasilitas.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {userBookings.length === 0 ? (
+            <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-3">
+              <div className="w-12 h-12 rounded-xl bg-slate-100 text-slate-500 flex items-center justify-center mx-auto">
+                <Ticket className="w-6 h-6" />
+              </div>
+              <h2 className="font-display font-bold text-lg text-slate-900">
+                Belum ada E-Ticket aktif
+              </h2>
+              <p className="text-sm text-slate-500 max-w-md mx-auto">
+                Booking lapangan di Bandung atau gabung sesi Open Play untuk mendapatkan E-Ticket QR otomatis yang tersinkronisasi ke kasir GOR.
+              </p>
+              <button
+                type="button"
+                onClick={onExploreClick}
+                className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-display font-bold text-xs rounded-xl transition-colors"
+              >
+                Cari Lapangan Sekarang
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {userBookings.map((booking) => {
+                const venue = venues.find((v) => v.id === booking.venueId);
+                if (!venue) return null;
+                const existingReview = reviews.find((r) => r.bookingId === booking.id);
+                return (
+                  <ETicketCard
+                    key={booking.id}
+                    booking={booking}
+                    venue={venue}
+                    existingReview={existingReview}
+                    onMarkParticipantPaid={onMarkParticipantPaid}
+                    onOpenMabarChat={onOpenMabarChat}
+                    onOpenReview={onOpenReview}
+                    onCancelBooking={onCancelBooking}
+                  />
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
 };
-

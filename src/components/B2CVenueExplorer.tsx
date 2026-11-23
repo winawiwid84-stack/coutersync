@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   Box,
+  Building2,
   Calendar,
   Check,
   ChevronRight,
@@ -52,6 +53,8 @@ interface B2CVenueExplorerProps {
   onJumpToMabar: () => void;
   onOpen3DViewer: (sport: SportCategory) => void;
   onGoToTicketsForReview: () => void;
+  onOpenPartnerOnboarding?: () => void;
+  onOpenProposal?: () => void;
   openPlayCount: number;
 }
 
@@ -72,6 +75,8 @@ export const B2CVenueExplorer: React.FC<B2CVenueExplorerProps> = ({
   onJumpToMabar,
   onOpen3DViewer,
   onGoToTicketsForReview,
+  onOpenPartnerOnboarding,
+  onOpenProposal,
   openPlayCount,
 }) => {
   const days = useMemo(() => getNext7Days(), []);
@@ -232,7 +237,7 @@ export const B2CVenueExplorer: React.FC<B2CVenueExplorerProps> = ({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Cari GOR Cikutra, Dago, Buah Batu, Pasteur..."
+                placeholder="Cari nama GOR, area Bandung (Dago, Buah Batu, Pasteur, Antapani)..."
                 className="w-full pl-10 pr-4 py-3 text-sm bg-slate-800/90 border border-slate-700 text-white placeholder:text-slate-400 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-400"
               />
             </div>
@@ -338,6 +343,49 @@ export const B2CVenueExplorer: React.FC<B2CVenueExplorerProps> = ({
           }}
           onOpen3DForSport={(sport) => onOpen3DViewer(sport)}
         />
+      ) : venues.length === 0 ? (
+        <div className="bg-white border border-slate-200 rounded-2xl p-8 sm:p-12 text-center space-y-5">
+          <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-700 flex items-center justify-center mx-auto">
+            <Building2 className="w-7 h-7 text-emerald-600" />
+          </div>
+          <div className="max-w-lg mx-auto space-y-2">
+            <h2 className="font-display font-extrabold text-xl text-slate-900">
+              Belum Ada Mitra GOR Terdaftar
+            </h2>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Katalog Mitra GOR Bandung saat ini masih kosong. Pemilik GOR dapat langsung mendaftarkan lapangan secara online agar slot booking tampil real-time di sini, atau jelajahi lokasi GOR Bandung via Google Maps.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+            {onOpenPartnerOnboarding && (
+              <button
+                type="button"
+                onClick={onOpenPartnerOnboarding}
+                className="px-4 py-2.5 text-xs sm:text-sm font-display font-bold bg-emerald-500 hover:bg-emerald-600 text-slate-950 rounded-xl transition-colors inline-flex items-center gap-1.5"
+              >
+                <Building2 className="w-4 h-4" />
+                <span>Daftarkan GOR sebagai Mitra</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setViewMode('map')}
+              className="px-4 py-2.5 text-xs sm:text-sm font-semibold bg-[#0F172A] hover:bg-slate-800 text-white rounded-xl transition-colors inline-flex items-center gap-1.5"
+            >
+              <MapIcon className="w-4 h-4 text-emerald-400" />
+              <span>Buka Peta GOR Bandung</span>
+            </button>
+            {onOpenProposal && (
+              <button
+                type="button"
+                onClick={onOpenProposal}
+                className="px-4 py-2.5 text-xs sm:text-sm font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl transition-colors"
+              >
+                Lihat Proposal Kemitraan
+              </button>
+            )}
+          </div>
+        </div>
       ) : filteredVenues.length === 0 ? (
         <div className="bg-white border border-slate-200 rounded-xl p-12 text-center space-y-3">
           <p className="font-display font-bold text-slate-900 text-lg">
@@ -371,7 +419,10 @@ export const B2CVenueExplorer: React.FC<B2CVenueExplorerProps> = ({
             <div className="space-y-3">
               {filteredVenues.map((venue) => {
                 const isSelected = activeVenue?.id === venue.id;
-                const minPrice = Math.min(...venue.courts.map((c) => c.basePricePerHour));
+                const minPrice =
+                  venue.courts.length > 0
+                    ? Math.min(...venue.courts.map((c) => c.basePricePerHour))
+                    : 0;
                 const rule = pricingRules[venue.id];
                 const hasImgError = imgErrors[venue.id];
 

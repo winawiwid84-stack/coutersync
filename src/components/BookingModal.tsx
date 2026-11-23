@@ -7,7 +7,9 @@ import {
   Copy,
   CreditCard,
   Link2,
+  Loader2,
   Lock,
+  LogIn,
   QrCode,
   ShieldCheck,
   Users,
@@ -31,6 +33,10 @@ import { ETicketCard } from './ETicketCard';
 
 interface BookingModalProps {
   selection: SelectedSlotPayload | null;
+  isSignedIn: boolean;
+  defaultName?: string;
+  defaultPhone?: string;
+  onPromptLogin: () => void;
   onClose: () => void;
   onConfirmBooking: (params: {
     bookingCode: string;
@@ -53,45 +59,35 @@ interface BookingModalProps {
       skillLevel: SkillLevel;
       description: string;
     };
-  }) => { ok: boolean; error?: string; booking?: Booking };
-  onSimulateParticipantPay: (bookingId: string, participantId: string) => void;
+  }) => Promise<{ ok: boolean; error?: string; booking?: Booking }>;
+  onMarkParticipantPaid: (bookingId: string, participantId: string) => void;
   onOpenMabarChat: (openPlayId: string) => void;
   onGoToTickets: () => void;
 }
 
-const DEFAULT_FRIEND_NAMES = [
-  'Nabila Putri',
-  'Dimas Adriansyah',
-  'Fajar Ramadhan',
-  'Sinta Maharani',
-  'Bagas Dwi',
-  'Tania Wijaya',
-  'Ilham Fauzi',
-  'Kevin Setiawan',
-  'Putri Wulandari',
-  'Yoga Pratama',
-  'Hafiz Nugroho',
-  'Rian Maulana',
-  'Danang Saputra',
-];
-
 export const BookingModal: React.FC<BookingModalProps> = ({
   selection,
+  isSignedIn,
+  defaultName,
+  defaultPhone,
+  onPromptLogin,
   onClose,
   onConfirmBooking,
-  onSimulateParticipantPay,
+  onMarkParticipantPaid,
   onOpenMabarChat,
   onGoToTickets,
 }) => {
   const [step, setStep] = useState<'config' | 'payment' | 'ticket'>('config');
-  const [customerName, setCustomerName] = useState('Andi Saputra');
-  const [customerPhone, setCustomerPhone] = useState('0812-2345-6789');
+  const [customerName, setCustomerName] = useState(defaultName || '');
+  const [customerPhone, setCustomerPhone] = useState(defaultPhone || '');
 
   // Payment mode: full vs split
   const [paymentMode, setPaymentMode] = useState<'full' | 'split'>('full');
   const [splitCount, setSplitCount] = useState(4);
+  const [participantNames, setParticipantNames] = useState<Record<number, string>>({});
   const [splitPaidIds, setSplitPaidIds] = useState<string[]>(['p-0']);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Open Play (Mabar) publishing
   const [publishOpenPlay, setPublishOpenPlay] = useState(false);
@@ -145,8 +141,8 @@ export const BookingModal: React.FC<BookingModalProps> = ({
     return {
       id,
       name: isHost
-        ? `${customerName || 'Kamu'} (Host)`
-        : DEFAULT_FRIEND_NAMES[(idx - 1) % DEFAULT_FRIEND_NAMES.length],
+        ? `${customerName.trim() || defaultName || 'Kamu'} (Host)`
+        : (participantNames[idx]?.trim() || `Peserta ${idx + 1}`),
       amount: perPersonAmount,
       paid,
       paidAt: paid ? 'Baru saja' : undefined,
@@ -157,7 +153,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   const paidNowCount = splitParticipants.filter((p) => p.paid).length;
   const amountDueNow = paymentMode === 'split' ? perPersonAmount : selection.totalPrice;
 
-  const handleToggleSimPay = (id: string) => {
+  const handleTogglePaid = (id: string) => {
     if (id === 'p-0') return;
     setSplitPaidIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
@@ -181,41 +177,61 @@ export const BookingModal: React.FC<BookingModalProps> = ({
     setTimeout(() => setCopiedVa(false), 1600);
   };
 
-  const handleConfirmPayment = () => {
+  const handleConfirmPayment = async () => {
     setConflictError(null);
-    const result = onConfirmBooking({
-      bookingCode: draftBookingCode,
-      venueId: selection.venue.id,
-      courtId: selection.court.id,
-      date: selection.date,
-      hours: selection.hours,
-      customerName: customerName.trim() || 'Pemain CourtSync',
-      customerPhone: customerPhone.trim() || '0812-0000-0000',
-      paymentMethod,
-      totalPrice: selection.totalPrice,
-      discountApplied: selection.discountApplied,
-      paymentMode,
-      splitLink: paymentMode === 'split' ? splitLink : undefined,
-      splitParticipants: paymentMode === 'split' ? splitParticipants : undefined,
-      publishOpenPlay,
-      openPlayConfig: publishOpenPlay
-        ? {
-            title: mabarTitle.trim() || `Mabar ${selection.venue.sport} ${selection.venue.name}`,
-            maxPlayers: mabarQuota,
-            skillLevel: mabarSkill,
-            description: mabarDesc.trim(),
-          }
-        : undefined,
-    });
-
-    if (!result.ok) {
-      setConflictError(result.error ?? 'Slot sudah dipesan oleh pengguna lain.');
+    if (!isSignedIn) {
+      onPromptLogin();
+      return;
+    }
+    const cleanName = customerName.trim();
+    const cleanPhone = customerPhone.trim();
+    if (cleanName.length < 2) {
+      setConflictError('Isi nama pemesan terlebih dahulu pada Langkah 1.');
+      return;
+    }
+    if (cleanPhone.length < 6) {
+      setConflictError('Isi nomor WhatsApp aktif (minimal 6 digit) pada Langkah 1.');
       return;
     }
 
-    if (result.booking) {
-      setConfirmedBooking(result.booking);
-      setStep('ticket');
+    setIsSubmitting(true);
+    try {
+      const result = await onConfirmBooking({
+        bookingCode: draftBookingCode,
+        venueId: selection.venue.id,
+        courtId: selection.court.id,
+        date: selection.date,
+        hours: selection.hours,
+        customerName: cleanName,
+        customerPhone: cleanPhone,
+        paymentMethod,
+        totalPrice: selection.totalPrice,
+        discountApplied: selection.discountApplied,
+        paymentMode,
+        splitLink: paymentMode === 'split' ? splitLink : undefined,
+        splitParticipants: paymentMode === 'split' ? splitParticipants : undefined,
+        publishOpenPlay,
+        openPlayConfig: publishOpenPlay
+          ? {
+              title: mabarTitle.trim() || `Mabar ${selection.venue.sport} ${selection.venue.name}`,
+              maxPlayers: mabarQuota,
+              skillLevel: mabarSkill,
+              description: mabarDesc.trim(),
+            }
+          : undefined,
+      });
+
+      if (!result.ok) {
+        setConflictError(result.error ?? 'Slot sudah dipesan oleh pengguna lain.');
+        return;
+      }
+
+      if (result.booking) {
+        setConfirmedBooking(result.booking);
+        setStep('ticket');
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -280,6 +296,20 @@ export const BookingModal: React.FC<BookingModalProps> = ({
 
           {step === 'config' && (
             <>
+              {!isSignedIn && (
+                <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex flex-wrap items-center justify-between gap-3 text-xs text-amber-950">
+                  <span>Masuk akun Google agar jadwal lapangan terkunci resmi di Cloud &amp; E-Ticket tersimpan.</span>
+                  <button
+                    type="button"
+                    onClick={onPromptLogin}
+                    className="px-3 py-1.5 bg-[#0F172A] text-white font-semibold rounded-lg inline-flex items-center gap-1.5"
+                  >
+                    <LogIn className="w-3.5 h-3.5" />
+                    Masuk / Daftar
+                  </button>
+                </div>
+              )}
+
               {/* Customer Details */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -411,14 +441,26 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                           style={{ width: `${(paidNowCount / splitCount) * 100}%` }}
                         />
                       </div>
-                      <div className="max-h-44 overflow-y-auto divide-y divide-slate-200 border border-slate-200 rounded-lg bg-white thin-scrollbar">
-                        {splitParticipants.map((p) => (
+                      <div className="max-h-48 overflow-y-auto divide-y divide-slate-200 border border-slate-200 rounded-lg bg-white thin-scrollbar">
+                        {splitParticipants.map((p, idx) => (
                           <div
                             key={p.id}
                             className="px-3 py-2 flex items-center justify-between gap-2 text-xs"
                           >
-                            <div className="min-w-0">
-                              <span className="font-medium text-slate-800 truncate block">{p.name}</span>
+                            <div className="min-w-0 flex-1">
+                              {p.isHost ? (
+                                <span className="font-medium text-slate-800 truncate block">{p.name}</span>
+                              ) : (
+                                <input
+                                  type="text"
+                                  value={participantNames[idx] ?? ''}
+                                  onChange={(e) =>
+                                    setParticipantNames((prev) => ({ ...prev, [idx]: e.target.value }))
+                                  }
+                                  placeholder={`Nama Peserta ${idx + 1}`}
+                                  className="w-full max-w-[180px] px-2 py-0.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                />
+                              )}
                               <span className="font-mono text-slate-500 tabular-nums">
                                 {formatIDR(p.amount)}
                               </span>
@@ -431,7 +473,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => handleToggleSimPay(p.id)}
+                                onClick={() => handleTogglePaid(p.id)}
                                 className={`px-2.5 py-1 rounded-md font-semibold text-[11px] transition-colors whitespace-nowrap inline-flex items-center gap-1 ${
                                   p.paid
                                     ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
@@ -441,10 +483,10 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                                 {p.paid ? (
                                   <>
                                     <Check className="w-3 h-3" />
-                                    Sudah Bayar (QRIS)
+                                    Lunas (QRIS)
                                   </>
                                 ) : (
-                                  'Tandai Sudah Bayar'
+                                  'Konfirmasi Bayar'
                                 )}
                               </button>
                             )}
@@ -675,8 +717,8 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               <ETicketCard
                 booking={confirmedBooking}
                 venue={selection.venue}
-                onSimulateParticipantPay={(bookingId, participantId) => {
-                  onSimulateParticipantPay(bookingId, participantId);
+                onMarkParticipantPaid={(bookingId, participantId) => {
+                  onMarkParticipantPaid(bookingId, participantId);
                   setConfirmedBooking((prev) => {
                     if (!prev || prev.id !== bookingId || !prev.splitParticipants) return prev;
                     return {
@@ -730,11 +772,21 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={handleConfirmPayment}
-                className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-display font-bold text-sm rounded-xl transition-colors inline-flex items-center gap-2 whitespace-nowrap"
+                disabled={isSubmitting}
+                onClick={() => void handleConfirmPayment()}
+                className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 text-slate-950 font-display font-bold text-sm rounded-xl transition-colors inline-flex items-center gap-2 whitespace-nowrap"
               >
-                <Check className="w-4 h-4" />
-                Konfirmasi Bayar & Terbitkan E-Ticket
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Mengunci Slot di Cloud...
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    Konfirmasi Bayar &amp; Terbitkan E-Ticket
+                  </>
+                )}
               </button>
             </>
           )}

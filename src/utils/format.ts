@@ -1,4 +1,4 @@
-import { DynamicPricingRule } from '../types/courtsync';
+import type { DynamicPricingRule } from '../types/courtsync.ts';
 
 export const OPERATING_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
 

@@ -5,6 +5,7 @@ import {
   Building2,
   Check,
   Loader2,
+  Map as MapIcon,
   MapPin,
   ShieldCheck,
   User,
@@ -12,7 +13,8 @@ import {
 import { signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
 import { fetchUserProfile, saveUserProfile } from '../services/courtsyncService';
-import { SkillLevel, SportCategory, UserProfile, UserRole } from '../types/courtsync';
+import { SkillLevel, UserProfile, UserRole } from '../types/courtsync';
+import { LocationMapPicker } from './LocationMapPicker';
 
 interface AuthPageProps {
   initialTab: 'login' | 'register';
@@ -20,16 +22,7 @@ interface AuthPageProps {
   onAuthComplete: (profile: UserProfile) => void;
 }
 
-const SPORTS: SportCategory[] = ['Badminton', 'Futsal', 'Mini Soccer', 'Padel'];
 const LEVELS: SkillLevel[] = ['Pemula', 'Menengah', 'Mahir'];
-const BANDUNG_AREAS = [
-  'Cikutra, Bandung',
-  'Buah Batu, Bandung',
-  'Dago Atas, Bandung',
-  'Cihampelas, Bandung',
-  'Pasteur, Bandung',
-  'Antapani, Bandung',
-];
 
 export const AuthPage: React.FC<AuthPageProps> = ({
   initialTab,
@@ -42,10 +35,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   // Registration fields
   const [displayName, setDisplayName] = useState('');
   const [phone, setPhone] = useState('');
-  const [favoriteSport, setFavoriteSport] = useState<SportCategory>('Badminton');
+  const [favoriteSport, setFavoriteSport] = useState('');
   const [skillLevel, setSkillLevel] = useState<SkillLevel>('Menengah');
   const [venueName, setVenueName] = useState('');
-  const [venueArea, setVenueArea] = useState(BANDUNG_AREAS[0]);
+  const [venueArea, setVenueArea] = useState('');
+  const [showLocationMap, setShowLocationMap] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -102,8 +96,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
           accountType: role,
           favoriteSport: role === 'player' ? 'Badminton' : undefined,
           skillLevel: role === 'player' ? 'Menengah' : undefined,
-          venueName: role === 'mitra_gor' ? 'GOR Cikutra Sport Center' : undefined,
-          venueArea: role === 'mitra_gor' ? 'Cikutra, Bandung' : undefined,
+          venueName: undefined,
+          venueArea: role === 'mitra_gor' ? 'Bandung' : undefined,
         });
         onAuthComplete(created);
         return;
@@ -116,10 +110,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         email,
         phone: phone.trim() || undefined,
         accountType: role,
-        favoriteSport: role === 'player' ? favoriteSport : undefined,
+        favoriteSport: role === 'player' ? favoriteSport.trim() || undefined : undefined,
         skillLevel: role === 'player' ? skillLevel : undefined,
         venueName: role === 'mitra_gor' ? venueName.trim() : undefined,
-        venueArea: role === 'mitra_gor' ? venueArea : undefined,
+        venueArea: role === 'mitra_gor' ? venueArea.trim() || undefined : undefined,
       });
       onAuthComplete(registered);
     } catch (err: unknown) {
@@ -351,25 +345,17 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                 {role === 'player' ? (
                   <>
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
                         Olahraga Favorit
                       </label>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        {SPORTS.map((sp) => (
-                          <button
-                            key={sp}
-                            type="button"
-                            onClick={() => setFavoriteSport(sp)}
-                            className={`py-2 px-2 rounded-lg text-xs font-semibold border transition-colors whitespace-nowrap ${
-                              favoriteSport === sp
-                                ? 'bg-[#0F172A] text-white border-[#0F172A]'
-                                : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
-                            }`}
-                          >
-                            {sp}
-                          </button>
-                        ))}
-                      </div>
+                      <input
+                        type="text"
+                        maxLength={60}
+                        value={favoriteSport}
+                        onChange={(e) => setFavoriteSport(e.target.value)}
+                        placeholder="Isi manual (contoh: Badminton, Futsal, Padel, Tenis...)"
+                        className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
                     </div>
 
                     <div>
@@ -395,39 +381,57 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                     </div>
                   </>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Nama GOR / Venue
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={venueName}
-                        onChange={(e) => setVenueName(e.target.value)}
-                        placeholder="Contoh: GOR Cikutra Sport Center"
-                        className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Lokasi Bandung
-                      </label>
-                      <div className="relative">
-                        <MapPin className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                        <select
-                          value={venueArea}
-                          onChange={(e) => setVenueArea(e.target.value)}
-                          className="w-full pl-9 pr-3 py-2.5 text-sm border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                        >
-                          {BANDUNG_AREAS.map((area) => (
-                            <option key={area} value={area}>
-                              {area}
-                            </option>
-                          ))}
-                        </select>
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Nama GOR / Venue
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={venueName}
+                          onChange={(e) => setVenueName(e.target.value)}
+                          placeholder="Contoh: GOR Antapani Sport Center"
+                          className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <label className="block text-xs font-semibold text-slate-700">
+                            Lokasi GOR
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setShowLocationMap((prev) => !prev)}
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 transition-colors"
+                          >
+                            <MapIcon className="w-3.5 h-3.5" />
+                            <span>{showLocationMap ? 'Tutup Maps' : 'Pilih di Maps'}</span>
+                          </button>
+                        </div>
+                        <div className="relative">
+                          <MapPin className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            type="text"
+                            required
+                            maxLength={80}
+                            value={venueArea}
+                            onChange={(e) => setVenueArea(e.target.value)}
+                            placeholder="Isi manual (mis. Antapani, Bandung) atau pilih Maps"
+                            className="w-full pl-9 pr-3 py-2.5 text-sm border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                          />
+                        </div>
                       </div>
                     </div>
+
+                    {showLocationMap && (
+                      <LocationMapPicker
+                        value={venueArea}
+                        onSelectLocation={(label) => setVenueArea(label)}
+                        onClose={() => setShowLocationMap(false)}
+                      />
+                    )}
                   </div>
                 )}
               </div>

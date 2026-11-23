@@ -39,6 +39,13 @@ service cloud.firestore {
       );
     }
 
+    function isVenueOwner(venueId) {
+      return isEmailVerified()
+        && exists(/databases/$(database)/documents/venues/$(venueId))
+        && 'ownerUid' in get(/databases/$(database)/documents/venues/$(venueId)).data
+        && get(/databases/$(database)/documents/venues/$(venueId)).data.ownerUid == request.auth.uid;
+    }
+
     // -------------------------------------------------------------------------
     // Validation Blueprints (Anti-Update-Gap)
     // -------------------------------------------------------------------------
@@ -53,7 +60,7 @@ service cloud.firestore {
           'name', 'sport', 'area', 'address', 'rating', 'reviewCount',
           'imageUrl', 'openHour', 'closeHour', 'facilities', 'bankAccount',
           'pricingEnabled', 'pricingDays', 'pricingStartHour', 'pricingEndHour',
-          'pricingDiscountPercent', 'pricingLabel', 'isPublic', 'updatedAt'
+          'pricingDiscountPercent', 'pricingLabel', 'ownerUid', 'isPublic', 'updatedAt'
         ])
         && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
         && data.sport in ['Badminton', 'Futsal', 'Mini Soccer', 'Padel']
@@ -74,18 +81,20 @@ service cloud.firestore {
         && data.pricingEndHour is int && data.pricingEndHour >= 9 && data.pricingEndHour <= 22
         && data.pricingDiscountPercent is int && data.pricingDiscountPercent >= 0 && data.pricingDiscountPercent <= 80
         && data.pricingLabel is string && data.pricingLabel.size() >= 1 && data.pricingLabel.size() <= 80
+        && (!('ownerUid' in data) || isValidId(data.ownerUid))
         && data.isPublic is bool
         && data.updatedAt is timestamp;
     }
 
     function isValidCourt(data) {
       return data.keys().hasAll(['venueId', 'name', 'surface', 'indoor', 'basePricePerHour', 'isPublic'])
-        && data.keys().hasOnly(['venueId', 'name', 'surface', 'indoor', 'basePricePerHour', 'isPublic'])
+        && data.keys().hasOnly(['venueId', 'name', 'surface', 'indoor', 'basePricePerHour', 'ownerUid', 'isPublic'])
         && isValidId(data.venueId)
         && data.name is string && data.name.size() >= 2 && data.name.size() <= 100
         && data.surface is string && data.surface.size() >= 2 && data.surface.size() <= 100
         && data.indoor is bool
         && data.basePricePerHour is int && data.basePricePerHour > 0 && data.basePricePerHour <= 20000000
+        && (!('ownerUid' in data) || isValidId(data.ownerUid))
         && data.isPublic is bool;
     }
 
@@ -100,7 +109,7 @@ service cloud.firestore {
           'bookingCode', 'venueId', 'courtId', 'date', 'hours',
           'customerName', 'customerPhone', 'source', 'paymentMethod',
           'totalPrice', 'discountApplied', 'paymentMode', 'splitLink',
-          'status', 'ownerUid', 'openPlayId', 'notes', 'createdAt', 'updatedAt'
+          'status', 'ownerUid', 'venueOwnerUid', 'checkedInAt', 'openPlayId', 'notes', 'createdAt', 'updatedAt'
         ])
         && data.bookingCode is string && data.bookingCode.size() >= 6 && data.bookingCode.size() <= 32
         && data.bookingCode.matches('^[A-Z0-9\\-]+$')
@@ -119,6 +128,8 @@ service cloud.firestore {
         && (!('splitLink' in data) || (data.splitLink is string && data.splitLink.size() <= 200))
         && data.status in ['confirmed', 'pending_split', 'cancelled']
         && isValidId(data.ownerUid)
+        && (!('venueOwnerUid' in data) || isValidId(data.venueOwnerUid))
+        && (!('checkedInAt' in data) || (data.checkedInAt is string && data.checkedInAt.size() <= 64))
         && (!('openPlayId' in data) || (data.openPlayId is string && data.openPlayId.size() <= 128))
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 300))
         && data.createdAt is timestamp
@@ -215,7 +226,7 @@ service cloud.firestore {
         && (!('phone' in data) || (data.phone is string && data.phone.size() <= 30))
         && data.accountType in ['player', 'mitra_gor']
         && data.verifiedMitra is bool
-        && (!('favoriteSport' in data) || data.favoriteSport in ['Badminton', 'Futsal', 'Mini Soccer', 'Padel'])
+        && (!('favoriteSport' in data) || (data.favoriteSport is string && data.favoriteSport.size() >= 1 && data.favoriteSport.size() <= 60))
         && (!('skillLevel' in data) || data.skillLevel in ['Pemula', 'Menengah', 'Mahir'])
         && (!('venueName' in data) || (data.venueName is string && data.venueName.size() <= 120))
         && (!('venueArea' in data) || (data.venueArea is string && data.venueArea.size() <= 80))
@@ -286,64 +297,110 @@ service cloud.firestore {
     // Collection Rules
     // -------------------------------------------------------------------------
 
-    // 1. Venues (Public Bandung Catalog + Dynamic Pricing Rules)
+    // 1. Venues (Public Bandung Catalog + Mitra GOR Owner Management)
     match /venues/{venueId} {
       allow get: if isValidId(venueId);
       allow list: if resource.data.isPublic == true;
-      allow create: if isAdmin()
+      allow create: if isEmailVerified()
         && isValidId(venueId)
         && isValidVenue(incoming())
         && incoming().isPublic == true
-        && incoming().updatedAt == request.time;
-      allow update: if isAdmin()
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          ('ownerUid' in incoming() && incoming().ownerUid == request.auth.uid)
+        );
+      allow update: if isEmailVerified()
         && isValidId(venueId)
         && isValidVenue(incoming())
         && incoming().isPublic == existing().isPublic
         && incoming().updatedAt == request.time
+        && (!('ownerUid' in existing()) || incoming().ownerUid == existing().ownerUid)
+        && (
+          isAdmin() ||
+          ('ownerUid' in existing() && existing().ownerUid == request.auth.uid)
+        )
         && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'area', 'address', 'facilities', 'bankAccount',
           'pricingEnabled', 'pricingDays', 'pricingStartHour', 'pricingEndHour',
           'pricingDiscountPercent', 'pricingLabel', 'updatedAt'
         ]);
-      allow delete: if false;
+      allow delete: if isEmailVerified()
+        && isValidId(venueId)
+        && (
+          isAdmin() ||
+          ('ownerUid' in existing() && existing().ownerUid == request.auth.uid)
+        );
     }
 
     // 2. Courts (Public Catalog linked to Venues)
     match /courts/{courtId} {
       allow get: if isValidId(courtId);
       allow list: if resource.data.isPublic == true;
-      allow create: if isAdmin()
+      allow create: if isEmailVerified()
         && isValidId(courtId)
         && isValidCourt(incoming())
         && incoming().isPublic == true
-        && existsAfter(/databases/$(database)/documents/venues/$(incoming().venueId));
-      allow update: if isAdmin()
+        && existsAfter(/databases/$(database)/documents/venues/$(incoming().venueId))
+        && (
+          isAdmin() || (
+            'ownerUid' in incoming()
+            && incoming().ownerUid == request.auth.uid
+            && 'ownerUid' in getAfter(/databases/$(database)/documents/venues/$(incoming().venueId)).data
+            && getAfter(/databases/$(database)/documents/venues/$(incoming().venueId)).data.ownerUid == request.auth.uid
+          )
+        );
+      allow update: if isEmailVerified()
         && isValidId(courtId)
         && isValidCourt(incoming())
         && incoming().venueId == existing().venueId
         && incoming().isPublic == existing().isPublic
+        && (!('ownerUid' in existing()) || incoming().ownerUid == existing().ownerUid)
+        && (
+          isAdmin() ||
+          ('ownerUid' in existing() && existing().ownerUid == request.auth.uid)
+        )
         && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'surface', 'basePricePerHour']);
-      allow delete: if false;
+      allow delete: if isEmailVerified()
+        && isValidId(courtId)
+        && (
+          isAdmin() ||
+          ('ownerUid' in existing() && existing().ownerUid == request.auth.uid)
+        );
     }
 
-    // 3. Bookings (PII-Isolated: Owner or Admin ONLY)
+    // 3. Bookings (PII-Isolated: Booking Owner, Venue Owner, or Admin ONLY)
     match /bookings/{bookingId} {
       allow get: if isSignedIn() && isValidId(bookingId)
-        && (existing().ownerUid == request.auth.uid || isAdmin());
+        && (
+          existing().ownerUid == request.auth.uid ||
+          ('venueOwnerUid' in existing() && existing().venueOwnerUid == request.auth.uid) ||
+          isAdmin()
+        );
       allow list: if isSignedIn()
-        && (existing().ownerUid == request.auth.uid || isBootstrappedAdmin());
+        && (
+          existing().ownerUid == request.auth.uid ||
+          ('venueOwnerUid' in existing() && existing().venueOwnerUid == request.auth.uid) ||
+          isBootstrappedAdmin()
+        );
       allow create: if isEmailVerified()
         && isValidId(bookingId)
         && isValidBooking(incoming())
         && incoming().ownerUid == request.auth.uid
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && (incoming().source == 'online' || isAdmin())
+        && (incoming().source == 'online' || isAdmin() || isVenueOwner(incoming().venueId))
         && exists(/databases/$(database)/documents/venues/$(incoming().venueId))
-        && exists(/databases/$(database)/documents/courts/$(incoming().courtId));
+        && exists(/databases/$(database)/documents/courts/$(incoming().courtId))
+        && (!('venueOwnerUid' in incoming()) || (
+          'ownerUid' in get(/databases/$(database)/documents/venues/$(incoming().venueId)).data
+          && incoming().venueOwnerUid == get(/databases/$(database)/documents/venues/$(incoming().venueId)).data.ownerUid
+        ));
       allow update: if isEmailVerified()
         && isValidId(bookingId)
         && isValidBooking(incoming())
         && incoming().ownerUid == existing().ownerUid
+        && (!('venueOwnerUid' in existing()) || incoming().venueOwnerUid == existing().venueOwnerUid)
         && incoming().venueId == existing().venueId
         && incoming().courtId == existing().courtId
         && incoming().bookingCode == existing().bookingCode
@@ -351,6 +408,14 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           isAdmin() ||
+          (
+            existing().status != 'cancelled'
+            && ('venueOwnerUid' in existing() && existing().venueOwnerUid == request.auth.uid)
+            && (
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) ||
+              incoming().diff(existing()).affectedKeys().hasOnly(['checkedInAt', 'updatedAt'])
+            )
+          ) ||
           (
             existing().status != 'cancelled'
             && existing().ownerUid == request.auth.uid
@@ -373,14 +438,18 @@ service cloud.firestore {
         && incoming().ownerUid == request.auth.uid
         && incoming().createdAt == request.time
         && slotId == (incoming().courtId + '_' + incoming().date + '_' + string(incoming().hour))
-        && (incoming().source == 'online' || isAdmin())
+        && (incoming().source == 'online' || isAdmin() || isVenueOwner(incoming().venueId))
         && exists(/databases/$(database)/documents/venues/$(incoming().venueId))
         && exists(/databases/$(database)/documents/courts/$(incoming().courtId))
         && existsAfter(/databases/$(database)/documents/bookings/$(incoming().bookingId));
       allow update: if false;
       allow delete: if isEmailVerified()
         && isValidId(slotId)
-        && (existing().ownerUid == request.auth.uid || isAdmin());
+        && (
+          existing().ownerUid == request.auth.uid ||
+          isAdmin() ||
+          isVenueOwner(existing().venueId)
+        );
     }
 
     // 5. Booking Participants (Split Bill Real-Time Status)
@@ -453,7 +522,9 @@ service cloud.firestore {
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
           )
         );
-      allow delete: if false;
+      allow delete: if isEmailVerified()
+        && isValidId(sessionId)
+        && isAdmin();
 
       // 6b. Temporary Lobby Chat Subcollection (Master Gate via Parent Open Play)
       match /messages/{messageId} {

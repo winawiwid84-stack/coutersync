@@ -139,7 +139,7 @@ export const GeminiChatbotDrawer: React.FC<GeminiChatbotDrawerProps> = ({
           type="button"
           onClick={() => setIsOpen(true)}
           aria-label="Buka Asisten Coach AI CourtSync"
-          className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2.5 px-4 py-3 bg-[#0F172A] hover:bg-slate-800 text-white border border-slate-700 rounded-2xl shadow-xl transition-all hover:-translate-y-0.5"
+          className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2.5 px-4 py-3 bg-[#0F172A] hover:bg-slate-800 text-white border border-slate-700 rounded-2xl shadow-xl transition-all hover:-translate-y-0.5 print:hidden"
         >
           <span className="w-7 h-7 rounded-lg bg-emerald-500 text-slate-950 flex items-center justify-center shrink-0">
             <MessageCircle className="w-4 h-4" />
@@ -156,7 +156,7 @@ export const GeminiChatbotDrawer: React.FC<GeminiChatbotDrawerProps> = ({
         <div
           role="dialog"
           aria-label="Asisten Coach AI CourtSync"
-          className="fixed bottom-4 right-4 z-50 w-[calc(100vw-2rem)] sm:w-[400px] h-[min(600px,calc(100vh-5rem))] bg-white border border-slate-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+          className="fixed bottom-4 right-4 z-50 w-[calc(100vw-2rem)] sm:w-[400px] h-[min(600px,calc(100vh-5rem))] bg-white border border-slate-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden print:hidden"
         >
           {/* Header */}
           <div className="bg-[#0F172A] text-white px-4 py-3.5 flex items-center justify-between gap-2 shrink-0">

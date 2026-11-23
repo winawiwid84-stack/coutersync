@@ -1,11 +1,12 @@
-import {
+import type {
   Booking,
   DynamicPricingRule,
   LobbyChatMessage,
   OpenPlaySession,
   Venue,
-} from '../types/courtsync';
-import { getNext7Days } from '../utils/format';
+  VenueReview,
+} from '../types/courtsync.ts';
+import { getNext7Days } from '../utils/format.ts';
 
 export const BANDUNG_VENUES: Venue[] = [
   {
@@ -553,7 +554,7 @@ export function createInitialData(): {
   return { bookings, openPlays, chatMessages };
 }
 
-export const INITIAL_VENUE_REVIEWS: import('../types/courtsync').VenueReview[] = [
+export const INITIAL_VENUE_REVIEWS: VenueReview[] = [
   {
     id: 'rev-1',
     venueId: 'gor-cikutra',

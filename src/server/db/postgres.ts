@@ -1,4 +1,6 @@
-import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
+import pg from 'pg';
+import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
+const { Pool: PgPool } = pg;
 
 declare global {
   var _courtSyncPgPool: Pool | undefined;
@@ -22,14 +24,14 @@ export function isPostgresConfigured(): boolean {
 export function getPgPool(): Pool {
   if (!global._courtSyncPgPool) {
     global._courtSyncPgPool = process.env.DATABASE_URL
-      ? new Pool({
+      ? new PgPool({
           connectionString: process.env.DATABASE_URL,
           max: 10,
           idleTimeoutMillis: 30_000,
           connectionTimeoutMillis: 10_000,
           ssl: process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : undefined,
         })
-      : new Pool({
+      : new PgPool({
           host: process.env.PGHOST || '127.0.0.1',
           port: Number(process.env.PGPORT || 5432),
           user: process.env.PGUSER || 'postgres',

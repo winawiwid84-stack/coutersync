@@ -1,8 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Calendar,
   Check,
   Clock,
+  Loader2,
+  LogIn,
   MapPin,
   MessageSquare,
   ShieldCheck,
@@ -22,7 +25,14 @@ import { QrCodeSvg } from './QrCodeSvg';
 interface OpenPlayFeedProps {
   sessions: OpenPlaySession[];
   venues: Venue[];
-  onJoinSession: (sessionId: string, playerName: string, paymentMethod: PaymentMethod) => void;
+  isSignedIn: boolean;
+  defaultPlayerName?: string;
+  onPromptLogin: () => void;
+  onJoinSession: (
+    sessionId: string,
+    playerName: string,
+    paymentMethod: PaymentMethod
+  ) => Promise<{ ok: boolean; error?: string }>;
   onOpenChat: (sessionId: string) => void;
   onCreateFromExplore: () => void;
 }
@@ -33,6 +43,9 @@ const LEVELS: ('Semua' | SkillLevel)[] = ['Semua', 'Pemula', 'Menengah', 'Mahir'
 export const OpenPlayFeed: React.FC<OpenPlayFeedProps> = ({
   sessions,
   venues,
+  isSignedIn,
+  defaultPlayerName,
+  onPromptLogin,
   onJoinSession,
   onOpenChat,
   onCreateFromExplore,
@@ -40,8 +53,10 @@ export const OpenPlayFeed: React.FC<OpenPlayFeedProps> = ({
   const [sportFilter, setSportFilter] = useState<'Semua' | SportCategory>('Semua');
   const [levelFilter, setLevelFilter] = useState<'Semua' | SkillLevel>('Semua');
   const [checkoutSession, setCheckoutSession] = useState<OpenPlaySession | null>(null);
-  const [playerName, setPlayerName] = useState('Andi Saputra');
+  const [playerName, setPlayerName] = useState(defaultPlayerName || '');
   const [payMethod, setPayMethod] = useState<PaymentMethod>('QRIS');
+  const [isJoining, setIsJoining] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     return sessions.filter((s) => {
@@ -53,12 +68,31 @@ export const OpenPlayFeed: React.FC<OpenPlayFeedProps> = ({
 
   const getVenue = (id: string) => venues.find((v) => v.id === id);
 
-  const handleConfirmJoin = () => {
+  const handleConfirmJoin = async () => {
     if (!checkoutSession) return;
-    onJoinSession(checkoutSession.id, playerName.trim() || 'Pemain CourtSync', payMethod);
-    const joinedId = checkoutSession.id;
-    setCheckoutSession(null);
-    onOpenChat(joinedId);
+    if (!isSignedIn) {
+      onPromptLogin();
+      return;
+    }
+    const cleanName = (playerName.trim() || defaultPlayerName || '').trim();
+    if (cleanName.length < 2) {
+      setJoinError('Masukkan nama lengkap Anda terlebih dahulu.');
+      return;
+    }
+    setJoinError(null);
+    setIsJoining(true);
+    try {
+      const result = await onJoinSession(checkoutSession.id, cleanName, payMethod);
+      if (!result.ok) {
+        setJoinError(result.error || 'Gagal bergabung ke sesi Open Play.');
+        return;
+      }
+      const joinedId = checkoutSession.id;
+      setCheckoutSession(null);
+      onOpenChat(joinedId);
+    } finally {
+      setIsJoining(false);
+    }
   };
 
   return (
@@ -262,7 +296,11 @@ export const OpenPlayFeed: React.FC<OpenPlayFeedProps> = ({
                       <button
                         type="button"
                         disabled={isFull}
-                        onClick={() => setCheckoutSession(session)}
+                        onClick={() => {
+                          setJoinError(null);
+                          setPlayerName((prev) => prev || defaultPlayerName || '');
+                          setCheckoutSession(session);
+                        }}
                         className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-200 disabled:text-slate-500 text-slate-950 font-display font-bold text-xs rounded-lg transition-colors whitespace-nowrap"
                       >
                         {isFull ? 'Slot Penuh' : 'Gabung & Kunci Slot'}
@@ -300,6 +338,27 @@ export const OpenPlayFeed: React.FC<OpenPlayFeedProps> = ({
             </div>
 
             <div className="p-5 space-y-4">
+              {!isSignedIn && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between gap-2 text-xs text-amber-950">
+                  <span>Masuk akun Google agar slot Mabar &amp; Chat Lobi tersimpan real-time.</span>
+                  <button
+                    type="button"
+                    onClick={onPromptLogin}
+                    className="px-2.5 py-1.5 bg-[#0F172A] text-white font-semibold rounded-lg whitespace-nowrap inline-flex items-center gap-1"
+                  >
+                    <LogIn className="w-3.5 h-3.5" />
+                    Masuk
+                  </button>
+                </div>
+              )}
+
+              {joinError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 text-xs text-red-700">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{joinError}</span>
+                </div>
+              )}
+
               <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-1">
                 <p className="font-semibold text-slate-900">
                   {getVenue(checkoutSession.venueId)?.name}
@@ -320,6 +379,7 @@ export const OpenPlayFeed: React.FC<OpenPlayFeedProps> = ({
                   type="text"
                   value={playerName}
                   onChange={(e) => setPlayerName(e.target.value)}
+                  placeholder="Nama lengkap kamu"
                   className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
@@ -345,7 +405,7 @@ export const OpenPlayFeed: React.FC<OpenPlayFeedProps> = ({
                 <div className="flex flex-col items-center p-3 bg-slate-50 border border-slate-200 rounded-xl">
                   <QrCodeSvg value={`MABAR|${checkoutSession.id}|${checkoutSession.costPerPerson}`} size={128} />
                   <p className="text-[11px] text-slate-500 mt-2">
-                    Scan QRIS untuk mengunci 1 slot & masuk ke Chat Lobi
+                    Scan QRIS untuk mengunci 1 slot &amp; masuk ke Chat Lobi
                   </p>
                 </div>
               ) : (
@@ -359,11 +419,21 @@ export const OpenPlayFeed: React.FC<OpenPlayFeedProps> = ({
 
               <button
                 type="button"
-                onClick={handleConfirmJoin}
-                className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-display font-bold text-sm rounded-xl transition-colors inline-flex items-center justify-center gap-2"
+                disabled={isJoining}
+                onClick={() => void handleConfirmJoin()}
+                className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 text-slate-950 font-display font-bold text-sm rounded-xl transition-colors inline-flex items-center justify-center gap-2"
               >
-                <ShieldCheck className="w-4 h-4" />
-                Bayar {formatIDR(checkoutSession.costPerPerson)} & Kunci Slot
+                {isJoining ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Mengunci Slot di Cloud...
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck className="w-4 h-4" />
+                    Bayar {formatIDR(checkoutSession.costPerPerson)} &amp; Kunci Slot
+                  </>
+                )}
               </button>
             </div>
           </div>

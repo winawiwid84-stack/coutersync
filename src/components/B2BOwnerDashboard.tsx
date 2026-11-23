@@ -7,6 +7,7 @@ import {
   Landmark,
   Percent,
   Plus,
+  QrCode,
   ShieldCheck,
   Star,
   Trash2,
@@ -37,6 +38,13 @@ interface B2BOwnerDashboardProps {
   pricingRules: Record<string, DynamicPricingRule>;
   activeTab: B2BTab;
   onTabChange: (tab: B2BTab) => void;
+  isSignedIn: boolean;
+  currentUserUid?: string;
+  isAdmin?: boolean;
+  onPromptLogin: () => void;
+  onOpenAddVenue: () => void;
+  onDeleteVenue?: (venueId: string) => Promise<{ ok: boolean; error?: string }>;
+  onClearAllVenues?: () => Promise<{ ok: boolean; deleted: number; error?: string }>;
   onAddManualBooking: (params: {
     venueId: string;
     courtId: string;
@@ -47,8 +55,9 @@ interface B2BOwnerDashboardProps {
     source: BookingSource;
     totalPrice: number;
     notes?: string;
-  }) => { ok: boolean; error?: string };
-  onCancelBooking: (bookingId: string) => void;
+  }) => Promise<{ ok: boolean; error?: string }>;
+  onCancelBooking: (bookingId: string) => Promise<void>;
+  onCheckInBooking: (bookingId: string) => Promise<{ ok: boolean; checkedInAt?: string; error?: string }>;
   onUpdatePricingRule: (venueId: string, rule: DynamicPricingRule) => void;
   onPreviewInB2C: () => void;
 }
@@ -70,8 +79,16 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
   pricingRules,
   activeTab,
   onTabChange,
+  isSignedIn,
+  currentUserUid,
+  isAdmin = false,
+  onPromptLogin,
+  onOpenAddVenue,
+  onDeleteVenue,
+  onClearAllVenues,
   onAddManualBooking,
   onCancelBooking,
+  onCheckInBooking,
   onUpdatePricingRule,
   onPreviewInB2C,
 }) => {
@@ -79,6 +96,14 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
   const [selectedVenueId, setSelectedVenueId] = useState(venues[0]?.id ?? '');
   const [selectedDate, setSelectedDate] = useState(days[0].iso);
   const [inspectedBooking, setInspectedBooking] = useState<Booking | null>(null);
+  const [confirmDeleteVenue, setConfirmDeleteVenue] = useState(false);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [isDeletingVenue, setIsDeletingVenue] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Cashier E-Ticket Check-In Bar state
+  const [checkInCode, setCheckInCode] = useState('');
+  const [checkInStatus, setCheckInStatus] = useState<{ type: 'ok' | 'err'; msg: string } | null>(null);
 
   // Walk-In Modal state
   const [walkInOpen, setWalkInOpen] = useState(false);
@@ -91,26 +116,42 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
   const [wiSource, setWiSource] = useState<'walkin' | 'member'>('walkin');
   const [wiNotes, setWiNotes] = useState('');
   const [wiToast, setWiToast] = useState<string | null>(null);
+  const [wiError, setWiError] = useState<string | null>(null);
 
-  const venue = useMemo(
-    () => venues.find((v) => v.id === selectedVenueId) ?? venues[0],
+  const venue: Venue | null = useMemo(
+    () => venues.find((v) => v.id === selectedVenueId) ?? venues[0] ?? null,
     [venues, selectedVenueId]
   );
 
-  const rule = pricingRules[venue.id] ?? {
-    venueId: venue.id,
-    enabled: false,
-    days: [1, 2, 3, 4, 5],
-    startHour: 9,
-    endHour: 15,
-    discountPercent: 20,
-    label: 'Promo Off-Peak',
-  };
+  const rule: DynamicPricingRule = useMemo(() => {
+    if (!venue) {
+      return {
+        venueId: '',
+        enabled: false,
+        days: [1, 2, 3, 4, 5],
+        startHour: 9,
+        endHour: 15,
+        discountPercent: 20,
+        label: 'Promo Off-Peak',
+      };
+    }
+    return (
+      pricingRules[venue.id] ?? {
+        venueId: venue.id,
+        enabled: false,
+        days: [1, 2, 3, 4, 5],
+        startHour: 9,
+        endHour: 15,
+        discountPercent: 20,
+        label: 'Promo Off-Peak',
+      }
+    );
+  }, [venue, pricingRules]);
 
   // Venue bookings for selected date & overall
   const venueAllBookings = useMemo(
-    () => bookings.filter((b) => b.venueId === venue.id && b.status !== 'cancelled'),
-    [bookings, venue.id]
+    () => (venue ? bookings.filter((b) => b.venueId === venue.id && b.status !== 'cancelled') : []),
+    [bookings, venue]
   );
 
   const venueDateBookings = useMemo(
@@ -120,7 +161,7 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
 
   // Metrics & H+1 Settlement calculation
   const metrics = useMemo(() => {
-    const totalSlotsToday = venue.courts.length * OPERATING_HOURS.length;
+    const totalSlotsToday = (venue?.courts.length ?? 0) * OPERATING_HOURS.length;
     const bookedHoursToday = venueDateBookings.reduce((sum, b) => sum + b.hours.length, 0);
     const occupancyPct = totalSlotsToday > 0 ? Math.round((bookedHoursToday / totalSlotsToday) * 100) : 0;
 
@@ -156,6 +197,7 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
 
   // Open Walk-In Modal (optionally prefilled from clicking an empty slot)
   const openWalkInModal = (courtId?: string, hour?: number) => {
+    if (!venue) return;
     setWiCourtId(courtId ?? venue.courts[0]?.id ?? '');
     setWiDate(selectedDate);
     setWiStartHour(hour ?? 14);
@@ -200,19 +242,26 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
   }, [walkInOpen, wiCourtId, wiDate, requestedWiHours, bookings]);
 
   const wiEstimatedPrice = useMemo(() => {
+    if (!venue) return 0;
     const court = venue.courts.find((c) => c.id === wiCourtId);
     if (!court) return 0;
     return requestedWiHours.reduce((sum, h) => {
       const calc = calculateSlotPrice(court.basePricePerHour, wiDate, h, rule);
       return sum + calc.finalPrice;
     }, 0);
-  }, [venue.courts, wiCourtId, requestedWiHours, wiDate, rule]);
+  }, [venue, wiCourtId, requestedWiHours, wiDate, rule]);
 
-  const handleWalkInSubmit = (e: React.FormEvent) => {
+  const handleWalkInSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (wiConflict || requestedWiHours.length === 0) return;
+    if (!venue || wiConflict || requestedWiHours.length === 0) return;
+    setWiError(null);
 
-    const result = onAddManualBooking({
+    if (!isSignedIn) {
+      onPromptLogin();
+      return;
+    }
+
+    const result = await onAddManualBooking({
       venueId: venue.id,
       courtId: wiCourtId,
       date: wiDate,
@@ -224,21 +273,157 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
       notes: wiNotes.trim() || undefined,
     });
 
-    if (result.ok) {
-      setWalkInOpen(false);
-      setWiToast(
-        `${wiSource === 'member' ? 'Member Rutin' : 'Walk-In'} berhasil dikunci (${formatHourRange(requestedWiHours)} WIB).`
-      );
-      setTimeout(() => setWiToast(null), 3500);
+    if (!result.ok) {
+      setWiError(result.error || 'Gagal menyimpan jadwal ke database.');
+      return;
     }
+
+    setWalkInOpen(false);
+    setWiToast(
+      `${wiSource === 'member' ? 'Member Rutin' : 'Walk-In'} berhasil dikunci di Cloud (${formatHourRange(requestedWiHours)} WIB).`
+    );
+    setTimeout(() => setWiToast(null), 3500);
+  };
+
+  const handleVerifyCheckIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = checkInCode.trim().toUpperCase();
+    if (!cleaned) return;
+    setCheckInStatus(null);
+
+    const found = bookings.find(
+      (b) => b.bookingCode.toUpperCase() === cleaned && b.status !== 'cancelled'
+    );
+    if (!found) {
+      setCheckInStatus({
+        type: 'err',
+        msg: `Kode E-Ticket "${cleaned}" tidak ditemukan atau sudah dibatalkan.`,
+      });
+      return;
+    }
+    if (found.checkedInAt) {
+      setCheckInStatus({
+        type: 'ok',
+        msg: `E-Ticket ${found.bookingCode} (${found.customerName}) sudah Check-In pukul ${found.checkedInAt}.`,
+      });
+      setInspectedBooking(found);
+      return;
+    }
+
+    const res = await onCheckInBooking(found.id);
+    if (!res.ok) {
+      setCheckInStatus({ type: 'err', msg: res.error || 'Gagal mencatat check-in.' });
+      return;
+    }
+    setCheckInCode('');
+    setCheckInStatus({
+      type: 'ok',
+      msg: `Check-In Berhasil! ${found.bookingCode} · ${found.customerName} (${formatHourRange(found.hours)} WIB) tercatat pukul ${res.checkedInAt}.`,
+    });
+    setInspectedBooking({ ...found, checkedInAt: res.checkedInAt });
   };
 
   // Helper to toggle day in Dynamic Pricing
   const togglePricingDay = (dayNum: number) => {
+    if (!venue) return;
     const exists = rule.days.includes(dayNum);
     const nextDays = exists ? rule.days.filter((d) => d !== dayNum) : [...rule.days, dayNum];
     onUpdatePricingRule(venue.id, { ...rule, days: nextDays });
   };
+
+  const canDeleteActiveVenue = Boolean(
+    venue && onDeleteVenue && (isAdmin || (currentUserUid && venue.ownerUid === currentUserUid))
+  );
+
+  const handleConfirmDeleteVenue = async () => {
+    if (!venue || !onDeleteVenue || isDeletingVenue) return;
+    setIsDeletingVenue(true);
+    setDeleteError(null);
+    const res = await onDeleteVenue(venue.id);
+    setIsDeletingVenue(false);
+    setConfirmDeleteVenue(false);
+    if (!res.ok) {
+      setDeleteError(res.error || 'Gagal menghapus GOR.');
+      return;
+    }
+    setInspectedBooking(null);
+    setWiToast(`Mitra GOR "${venue.name}" beserta seluruh lapangannya telah dihapus dari database.`);
+    setTimeout(() => setWiToast(null), 4000);
+  };
+
+  const handleConfirmClearAllVenues = async () => {
+    if (!onClearAllVenues || isDeletingVenue) return;
+    setIsDeletingVenue(true);
+    setDeleteError(null);
+    const res = await onClearAllVenues();
+    setIsDeletingVenue(false);
+    setConfirmClearAll(false);
+    if (!res.ok) {
+      setDeleteError(res.error || 'Gagal mengosongkan semua Mitra GOR.');
+      return;
+    }
+    setInspectedBooking(null);
+    setWiToast(`Seluruh Mitra GOR (${res.deleted} venue) telah dikosongkan dari database.`);
+    setTimeout(() => setWiToast(null), 4000);
+  };
+
+  // Empty State when 0 Mitra GORs are registered in Firestore
+  if (!venue) {
+    return (
+      <div className="space-y-6 pb-20">
+        <section className="bg-[#0F172A] text-white rounded-2xl p-8 sm:p-10">
+          <div className="max-w-2xl space-y-3">
+            <p className="text-xs font-semibold text-emerald-400">
+              Portal Mitra GOR · 0 Mitra Terdaftar
+            </p>
+            <h1 className="font-display font-extrabold text-2xl sm:text-3xl tracking-tight">
+              Belum ada Mitra GOR yang terdaftar di CourtSync
+            </h1>
+            <p className="text-sm text-slate-300 leading-relaxed">
+              Daftar Mitra GOR saat ini dalam kondisi bersih dan kosong. Daftarkan GOR resmi pertama Anda beserta jumlah lapangan, tarif per jam, dan rekening pencairan H+1 agar langsung tayang real-time di halaman booking pemain.
+            </p>
+            <div className="pt-3 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={onOpenAddVenue}
+                className="px-5 py-3 text-xs sm:text-sm font-display font-bold text-slate-950 bg-emerald-500 hover:bg-emerald-400 rounded-xl transition-colors inline-flex items-center gap-2"
+              >
+                <Building2 className="w-4 h-4" />
+                <span>Daftarkan GOR Pertama Anda</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onTabChange('proposal')}
+                className="px-4 py-3 text-xs sm:text-sm font-semibold text-amber-300 bg-slate-800 hover:bg-slate-700 border border-amber-400/30 rounded-xl transition-colors"
+              >
+                Lihat Proposal &amp; MoU Mitra
+              </button>
+              <button
+                type="button"
+                onClick={onPreviewInB2C}
+                className="px-4 py-3 text-xs sm:text-sm font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors inline-flex items-center gap-1.5"
+              >
+                <span>Mode Pemain</span>
+                <ArrowUpRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {wiToast && (
+          <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between gap-3 text-xs font-semibold text-emerald-900">
+            <span className="inline-flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-600" />
+              {wiToast}
+            </span>
+            <button type="button" onClick={() => setWiToast(null)} className="text-emerald-700 hover:text-emerald-950">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 pb-20">
@@ -258,6 +443,8 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
               onChange={(e) => {
                 setSelectedVenueId(e.target.value);
                 setInspectedBooking(null);
+                setConfirmDeleteVenue(false);
+                setConfirmClearAll(false);
               }}
               className="px-3 py-1.5 text-xs font-semibold bg-slate-800 border border-slate-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400"
             >
@@ -276,10 +463,44 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
         <div className="flex flex-wrap items-center gap-2.5">
           <button
             type="button"
+            onClick={onOpenAddVenue}
+            className="px-4 py-2.5 text-xs font-semibold text-amber-300 bg-slate-800 hover:bg-slate-700 border border-amber-400/40 rounded-xl transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Building2 className="w-3.5 h-3.5" />
+            <span>Daftarkan GOR Baru</span>
+          </button>
+          {canDeleteActiveVenue && !confirmDeleteVenue && (
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmDeleteVenue(true);
+                setConfirmClearAll(false);
+              }}
+              className="px-3.5 py-2.5 text-xs font-semibold text-red-300 bg-red-950/50 hover:bg-red-900/60 border border-red-800/70 rounded-xl transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Hapus GOR</span>
+            </button>
+          )}
+          {isAdmin && onClearAllVenues && !confirmClearAll && (
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmClearAll(true);
+                setConfirmDeleteVenue(false);
+              }}
+              className="px-3.5 py-2.5 text-xs font-semibold text-red-200 bg-slate-800 hover:bg-red-950/70 border border-red-800/50 rounded-xl transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-red-400" />
+              <span>Kosongkan Semua Mitra</span>
+            </button>
+          )}
+          <button
+            type="button"
             onClick={onPreviewInB2C}
             className="px-4 py-2.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
           >
-            <span>Lihat di Mode Pemain</span>
+            <span>Mode Pemain</span>
             <ArrowUpRight className="w-3.5 h-3.5" />
           </button>
           <button
@@ -292,6 +513,78 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
           </button>
         </div>
       </section>
+
+      {/* Inline Delete / Clear All Confirmation Banner */}
+      {(confirmDeleteVenue || confirmClearAll || deleteError) && (
+        <div className="p-4 bg-red-50 border border-red-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-red-900">
+          {deleteError ? (
+            <>
+              <span className="font-semibold">{deleteError}</span>
+              <button
+                type="button"
+                onClick={() => setDeleteError(null)}
+                className="px-3 py-1.5 rounded-lg bg-white border border-red-200 text-red-800 font-semibold self-start sm:self-auto"
+              >
+                Tutup
+              </button>
+            </>
+          ) : confirmClearAll ? (
+            <>
+              <div>
+                <p className="font-bold text-red-950">Kosongkan seluruh {venues.length} Mitra GOR dari database?</p>
+                <p className="text-red-700 mt-0.5">
+                  Semua venue Mitra GOR dan daftar lapangannya akan dihapus permanen dari Cloud Firestore.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={isDeletingVenue}
+                  onClick={() => setConfirmClearAll(false)}
+                  className="px-3 py-1.5 rounded-lg bg-white border border-red-200 text-slate-700 font-semibold hover:bg-slate-50"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingVenue}
+                  onClick={() => void handleConfirmClearAllVenues()}
+                  className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold disabled:opacity-60"
+                >
+                  {isDeletingVenue ? 'Menghapus...' : 'Ya, Kosongkan Semua'}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <p className="font-bold text-red-950">Hapus Mitra GOR "{venue.name}"?</p>
+                <p className="text-red-700 mt-0.5">
+                  Venue ini beserta {venue.courts.length} lapangannya akan dihapus dari katalog Cloud Firestore.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={isDeletingVenue}
+                  onClick={() => setConfirmDeleteVenue(false)}
+                  className="px-3 py-1.5 rounded-lg bg-white border border-red-200 text-slate-700 font-semibold hover:bg-slate-50"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingVenue}
+                  onClick={() => void handleConfirmDeleteVenue()}
+                  className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold disabled:opacity-60"
+                >
+                  {isDeletingVenue ? 'Menghapus...' : 'Ya, Hapus GOR'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Success Toast */}
       {wiToast && (
@@ -427,6 +720,50 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
               ))}
             </div>
           </div>
+
+          {/* Cashier E-Ticket QR / Code Check-In Strip */}
+          <form
+            onSubmit={(e) => void handleVerifyCheckIn(e)}
+            className="px-5 py-3 bg-emerald-50/50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+          >
+            <div className="flex items-center gap-2 text-xs text-slate-700">
+              <QrCode className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span className="font-semibold text-slate-900">Verifikasi Check-In Kasir:</span>
+              <span className="text-slate-500 hidden md:inline">
+                Masukkan kode E-Ticket pemain (misal CS-BDG-...)
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={checkInCode}
+                onChange={(e) => setCheckInCode(e.target.value)}
+                placeholder="Ketik kode CS-BDG-..."
+                className="px-3 py-1.5 text-xs font-mono uppercase bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 w-48"
+              />
+              <button
+                type="submit"
+                className="px-3.5 py-1.5 text-xs font-semibold bg-[#0F172A] hover:bg-slate-800 text-white rounded-lg transition-colors whitespace-nowrap"
+              >
+                Check-In
+              </button>
+            </div>
+          </form>
+
+          {checkInStatus && (
+            <div
+              className={`px-5 py-2.5 text-xs font-medium flex items-center justify-between gap-2 border-b ${
+                checkInStatus.type === 'ok'
+                  ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                  : 'bg-red-50 text-red-800 border-red-200'
+              }`}
+            >
+              <span>{checkInStatus.msg}</span>
+              <button type="button" onClick={() => setCheckInStatus(null)} className="opacity-70 hover:opacity-100">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
 
           {/* Legend Bar */}
           <div className="px-5 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
@@ -584,12 +921,32 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
                   · {formatIDR(inspectedBooking.totalPrice)} ({inspectedBooking.paymentMethod.replace('_', ' ')})
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {inspectedBooking.checkedInAt ? (
+                  <span className="px-2.5 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-100 border border-emerald-200 rounded-lg inline-flex items-center gap-1">
+                    <Check className="w-3.5 h-3.5" />
+                    Checked-In · {inspectedBooking.checkedInAt}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const res = await onCheckInBooking(inspectedBooking.id);
+                      if (res.ok) {
+                        setInspectedBooking({ ...inspectedBooking, checkedInAt: res.checkedInAt });
+                      }
+                    }}
+                    className="px-3 py-1.5 text-xs font-semibold text-emerald-950 bg-emerald-400 hover:bg-emerald-500 rounded-lg inline-flex items-center gap-1"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    Tandai Check-In
+                  </button>
+                )}
                 {inspectedBooking.source !== 'online' && (
                   <button
                     type="button"
                     onClick={() => {
-                      onCancelBooking(inspectedBooking.id);
+                      void onCancelBooking(inspectedBooking.id);
                       setInspectedBooking(null);
                     }}
                     className="px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg inline-flex items-center gap-1"
@@ -779,10 +1136,10 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
           <div className="lg:col-span-5 bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
             <div>
               <h3 className="font-display font-bold text-base text-slate-900">
-                Simulasi Tarif Lapangan
+                Pratinjau Tarif Aktif Lapangan
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Perbandingan harga reguler vs harga otomatis jam off-peak ({formatSingleHour(rule.startHour)}–{formatSingleHour(rule.endHour)} WIB).
+                Perbandingan tarif reguler vs tarif otomatis jam off-peak ({formatSingleHour(rule.startHour)}–{formatSingleHour(rule.endHour)} WIB).
               </p>
             </div>
 
@@ -1258,6 +1615,12 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
                 />
               </div>
 
+              {wiError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 font-medium">
+                  {wiError}
+                </div>
+              )}
+
               <div className="pt-2 flex items-center justify-end gap-2">
                 <button
                   type="button"
@@ -1271,7 +1634,7 @@ export const B2BOwnerDashboard: React.FC<B2BOwnerDashboardProps> = ({
                   disabled={Boolean(wiConflict) || !wiName.trim()}
                   className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-200 disabled:text-slate-400 text-slate-950 font-display font-bold text-xs rounded-lg transition-colors"
                 >
-                  Simpan &amp; Kunci Jadwal
+                  Simpan &amp; Kunci Jadwal di Cloud
                 </button>
               </div>
             </form>

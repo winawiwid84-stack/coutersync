@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
+import type { Request, Response } from 'express';
 import { isPostgresConfigured, queryPg, withPgTransaction } from '../db/postgres.ts';
 import { BANDUNG_VENUES, INITIAL_DYNAMIC_PRICING } from '../../data/mockBandungData.ts';
 import { OPERATING_HOURS, calculateSlotPrice, generateBookingCode } from '../../utils/format.ts';

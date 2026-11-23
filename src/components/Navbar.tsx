@@ -1,5 +1,5 @@
 import React from 'react';
-import { Building2, LogIn, LogOut, Sparkles, User, UserPlus } from 'lucide-react';
+import { Building2, FileSignature, LogIn, LogOut, Sparkles, User, UserPlus } from 'lucide-react';
 import { AppMode, AuthScreen, B2BTab, B2CTab, UserProfile } from '../types/courtsync';
 
 interface NavbarProps {
@@ -40,7 +40,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     (userProfile?.displayName || currentUser?.displayName || 'Akun').split(' ')[0];
 
   return (
-    <header className="sticky top-0 z-40 bg-[#0F172A] text-white border-b border-slate-800">
+    <header className="sticky top-0 z-40 bg-[#0F172A] text-white border-b border-slate-800 print:hidden">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3 lg:gap-6">
         {/* Zone 1: Single-line Brand Wordmark */}
         <button
@@ -64,7 +64,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
 
         {/* Zone 2: Clean Single-Line Navigation Links (Desktop) */}
-        <nav aria-label="Navigasi Utama" className="hidden lg:flex items-center gap-6 text-sm font-medium">
+        <nav aria-label="Navigasi Utama" className="hidden lg:flex items-center gap-5 text-sm font-medium">
           {mode === 'B2C' ? (
             <>
               <button
@@ -152,6 +152,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               >
                 <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
                 <span>Studio AI</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onB2BTabChange('proposal')}
+                className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 flex items-center gap-1.5 ${
+                  !isAuthOpen && b2bTab === 'proposal'
+                    ? 'text-white border-amber-400'
+                    : 'text-slate-300 border-transparent hover:text-white'
+                }`}
+              >
+                <FileSignature className="w-3.5 h-3.5 text-amber-400" />
+                <span>Proposal &amp; MoU</span>
               </button>
               <button
                 type="button"
@@ -349,6 +361,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               >
                 <Sparkles className="w-3 h-3 text-emerald-400" />
                 Studio AI
+              </button>
+              <button
+                type="button"
+                onClick={() => onB2BTabChange('proposal')}
+                className={`whitespace-nowrap shrink-0 py-1 border-b-2 inline-flex items-center gap-1 ${
+                  !isAuthOpen && b2bTab === 'proposal'
+                    ? 'text-white border-amber-400'
+                    : 'text-slate-400 border-transparent'
+                }`}
+              >
+                <FileSignature className="w-3 h-3 text-amber-400" />
+                Proposal &amp; MoU
               </button>
               <button
                 type="button"

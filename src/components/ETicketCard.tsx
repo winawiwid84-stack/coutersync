@@ -19,9 +19,10 @@ interface ETicketCardProps {
   booking: Booking;
   venue: Venue;
   existingReview?: VenueReview;
-  onSimulateParticipantPay?: (bookingId: string, participantId: string) => void;
+  onMarkParticipantPaid?: (bookingId: string, participantId: string) => void;
   onOpenMabarChat?: (openPlayId: string) => void;
   onOpenReview?: (booking: Booking, venue: Venue) => void;
+  onCancelBooking?: (bookingId: string) => Promise<void>;
   compact?: boolean;
 }
 
@@ -29,13 +30,16 @@ export const ETicketCard: React.FC<ETicketCardProps> = ({
   booking,
   venue,
   existingReview,
-  onSimulateParticipantPay,
+  onMarkParticipantPaid,
   onOpenMabarChat,
   onOpenReview,
+  onCancelBooking,
   compact = false,
 }) => {
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   const court = venue.courts.find((c) => c.id === booking.courtId);
   const paidCount = booking.splitParticipants?.filter((p) => p.paid).length ?? 0;
@@ -65,6 +69,12 @@ export const ETicketCard: React.FC<ETicketCardProps> = ({
           </h4>
         </div>
         <div className="flex items-center gap-2">
+          {booking.checkedInAt && (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-300 bg-amber-500/15 border border-amber-400/30 px-2.5 py-1 rounded-md">
+              <Check className="w-3.5 h-3.5" />
+              Check-In · {booking.checkedInAt}
+            </span>
+          )}
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-300 bg-emerald-500/15 border border-emerald-400/30 px-2.5 py-1 rounded-md">
             <ShieldCheck className="w-3.5 h-3.5" />
             {booking.paymentMode === 'split' && paidCount < totalParticipants
@@ -171,13 +181,13 @@ export const ETicketCard: React.FC<ETicketCardProps> = ({
                     ) : (
                       <div className="flex items-center gap-2 shrink-0">
                         <span className="text-amber-700 font-medium">Menunggu</span>
-                        {onSimulateParticipantPay && (
+                        {onMarkParticipantPaid && (
                           <button
                             type="button"
-                            onClick={() => onSimulateParticipantPay(booking.id, p.id)}
+                            onClick={() => onMarkParticipantPaid(booking.id, p.id)}
                             className="px-2.5 py-1 text-[11px] font-semibold bg-white border border-amber-300 hover:border-emerald-500 hover:text-emerald-700 text-amber-900 rounded-md transition-colors whitespace-nowrap"
                           >
-                            Tandai Sudah Bayar
+                            Konfirmasi Bayar
                           </button>
                         )}
                       </div>
@@ -210,6 +220,45 @@ export const ETicketCard: React.FC<ETicketCardProps> = ({
                 <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
                 Selesai Main? Beri Ulasan &amp; Rating
               </button>
+            )}
+
+            {!compact && onCancelBooking && !booking.checkedInAt && (
+              confirmCancel ? (
+                <div className="inline-flex items-center gap-1.5 bg-red-50 border border-red-200 px-2.5 py-1.5 rounded-lg text-xs">
+                  <span className="text-red-800 font-medium">Batalkan &amp; lepas slot?</span>
+                  <button
+                    type="button"
+                    disabled={isCancelling}
+                    onClick={async () => {
+                      setIsCancelling(true);
+                      try {
+                        await onCancelBooking(booking.id);
+                      } finally {
+                        setIsCancelling(false);
+                        setConfirmCancel(false);
+                      }
+                    }}
+                    className="px-2 py-0.5 bg-red-600 hover:bg-red-700 text-white font-semibold rounded"
+                  >
+                    {isCancelling ? '...' : 'Ya'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmCancel(false)}
+                    className="px-2 py-0.5 text-slate-600 hover:text-slate-900 font-medium"
+                  >
+                    Batal
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmCancel(true)}
+                  className="text-xs font-medium text-slate-500 hover:text-red-600 px-2 py-1.5 transition-colors"
+                >
+                  Batalkan Booking
+                </button>
+              )
             )}
           </div>
 

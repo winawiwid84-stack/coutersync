@@ -67,23 +67,20 @@ const B2C_PRESETS = [
   {
     label: 'Recap Mabar Badminton',
     prompt:
-      'Buat konten recap keseruan Mabar Badminton malam ini di GOR Cikutra Sport Center dan ajak anak-anak Bandung gabung sesi minggu depan pakai Split Bill CourtSync.',
+      'Buat konten recap keseruan Mabar Badminton malam ini di Bandung dan ajak teman-teman gabung sesi minggu depan pakai Split Bill CourtSync.',
     platform: 'Instagram Reels' as ContentPlatform,
-    venueId: 'gor-cikutra',
   },
   {
-    label: 'Ajak Mabar Padel Dago',
+    label: 'Ajak Mabar Padel Bandung',
     prompt:
-      'Buat ajakan Open Play Padel santai untuk level Pemula sampai Menengah di Padel Club Dago, highlight suasana sejuk Dago Atas dan patungan otomatis via QRIS.',
+      'Buat ajakan Open Play Padel santai untuk level Pemula sampai Menengah di Bandung, highlight suasana seru dan patungan otomatis via QRIS.',
     platform: 'TikTok' as ContentPlatform,
-    venueId: 'padel-dago',
   },
   {
-    label: 'Highlight Futsal Buah Batu',
+    label: 'Highlight Futsal Komunitas',
     prompt:
       'Dari foto/video pertandingan futsal tim kami, buatkan skrip video singkat yang hype untuk TikTok lengkap dengan hook 3 detik pertama dan ajakan sparring komunitas Bandung.',
     platform: 'TikTok' as ContentPlatform,
-    venueId: 'futsal-buahbatu',
   },
 ];
 
@@ -93,21 +90,18 @@ const B2B_PRESETS = [
     prompt:
       'Buatkan kampanye promosi diskon jam sepi (Off-Peak) Senin–Jumat siang untuk menarik mahasiswa dan komunitas kantor di Bandung agar booking lapangan langsung di CourtSync.',
     platform: 'Instagram Reels' as ContentPlatform,
-    venueId: 'gor-cikutra',
   },
   {
     label: 'Tur Fasilitas GOR',
     prompt:
       'Buat naskah dan caption tur fasilitas lapangan premium kami (karpet/rumput standar turnamen, parkir luas, booking instan anti-bentrok) berdasarkan media yang diunggah.',
     platform: 'Instagram Feed' as ContentPlatform,
-    venueId: 'padel-dago',
   },
   {
     label: 'Broadcast Slot Weekend',
     prompt:
       'Susun pesan broadcast WhatsApp dan caption singkat untuk menginformasikan sisa slot prime-time akhir pekan yang masih kosong agar segera dikunci oleh member dan tim Bandung.',
     platform: 'WhatsApp Broadcast' as ContentPlatform,
-    venueId: 'minisoccer-cihampelas',
   },
 ];
 
@@ -445,7 +439,6 @@ export const AIContentStudio: React.FC<AIContentStudioProps> = ({
                   onClick={() => {
                     setPrompt(preset.prompt);
                     setPlatform(preset.platform);
-                    setSelectedVenueId(preset.venueId);
                     setErrorMessage(null);
                   }}
                   className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 transition-colors text-left"
@@ -557,7 +550,7 @@ export const AIContentStudio: React.FC<AIContentStudioProps> = ({
               rows={4}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Contoh: Buatkan konten Reels 20 detik dari video smash badminton ini untuk ajak Mabar di GOR Cikutra Bandung Jumat malam..."
+              placeholder="Contoh: Buatkan konten Reels 20 detik dari video smash badminton ini untuk ajak Mabar di Bandung Jumat malam..."
               className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y"
             />
           </div>

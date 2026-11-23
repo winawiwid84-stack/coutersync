@@ -22,6 +22,7 @@
         "pricingEndHour": { "type": "integer" },
         "pricingDiscountPercent": { "type": "integer" },
         "pricingLabel": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "ownerUid": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "isPublic": { "type": "boolean" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -56,6 +57,7 @@
         "surface": { "type": "string", "minLength": 2, "maxLength": 100 },
         "indoor": { "type": "boolean" },
         "basePricePerHour": { "type": "integer" },
+        "ownerUid": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "isPublic": { "type": "boolean" }
       },
       "required": ["venueId", "name", "surface", "indoor", "basePricePerHour", "isPublic"]
@@ -80,6 +82,8 @@
         "splitLink": { "type": "string", "maxLength": 200 },
         "status": { "type": "string", "enum": ["confirmed", "pending_split", "cancelled"] },
         "ownerUid": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "venueOwnerUid": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "checkedInAt": { "type": "string", "maxLength": 64 },
         "openPlayId": { "type": "string", "maxLength": 128 },
         "notes": { "type": "string", "maxLength": 300 },
         "createdAt": { "type": "string", "format": "date-time" },

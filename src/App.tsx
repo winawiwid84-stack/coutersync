@@ -12,7 +12,9 @@ import {
   B2BTab,
   B2CTab,
   Booking,
+  BookingSlotLock,
   BookingSource,
+  Court,
   DynamicPricingRule,
   GeneratedContentPackage,
   LobbyChatMessage,
@@ -26,24 +28,22 @@ import {
   Venue,
   VenueReview,
 } from './types/courtsync';
-import {
-  BANDUNG_VENUES,
-  INITIAL_DYNAMIC_PRICING,
-  INITIAL_VENUE_REVIEWS,
-  createInitialData,
-} from './data/mockBandungData';
 import { formatSingleHour, generateBookingCode } from './utils/format';
 import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
 import {
+  cancelBookingInFirestore,
+  checkInBookingInFirestore,
   createAtomicFirestoreBooking,
   createVenueReviewToFirestore,
+  deleteAllVenuesInFirestore,
   deleteContentDraftFromFirestore,
-  ensureVenuesSeeded,
-  fetchPublicVenueReviews,
+  deleteVenueWithCourtsInFirestore,
   fetchUserContentDrafts,
   fetchUserProfile,
+  joinOpenPlayInFirestore,
   persistLobbyMessage,
   persistVenueDynamicPricing,
+  purgeSeededDemoVenues,
   saveContentDraftToFirestore,
   triggerSplitBillPaymentWebhook,
 } from './services/courtsyncService';
@@ -59,17 +59,10 @@ import { LobbyChatDrawer } from './components/LobbyChatDrawer';
 import { ReviewModal } from './components/ReviewModal';
 import { Venue3DViewerModal } from './components/Venue3DViewerModal';
 import { GeminiChatbotDrawer } from './components/GeminiChatbotDrawer';
-
-const SIMULATED_REPLIES = [
-  'Siap bro, gas ketemu di lapangan nanti!',
-  'Mantap, saya juga bawa cadangan bola / shuttlecock ya.',
-  'Oke noted! Hati-hati di jalan, Bandung sore agak macet dikit.',
-  'Sip banget, nanti pemanasan bareng 10 menit sebelum mulai.',
-];
+import { MitraProposalPage } from './components/MitraProposalPage';
+import { AddVenueModal } from './components/AddVenueModal';
 
 export default function App() {
-  const initial = useMemo(() => createInitialData(), []);
-
   const [mode, setMode] = useState<AppMode>('B2C');
   const [b2cTab, setB2CTab] = useState<B2CTab>('explore');
   const [b2bTab, setB2BTab] = useState<B2BTab>('calendar');
@@ -78,42 +71,112 @@ export default function App() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [authReady, setAuthReady] = useState(false);
 
-  const [bookings, setBookings] = useState<Booking[]>(() =>
-    initial.bookings.map((b) => (b.id === 'bk-101' ? { ...b, isUserBooking: true } : b))
-  );
-  const [openPlays, setOpenPlays] = useState<OpenPlaySession[]>(initial.openPlays);
-  const [chatMessages, setChatMessages] = useState<LobbyChatMessage[]>(initial.chatMessages);
-  const [pricingRules, setPricingRules] = useState<Record<string, DynamicPricingRule>>(
-    INITIAL_DYNAMIC_PRICING
-  );
+  // Real-time Cloud Firestore states
+  const [cloudVenuesMap, setCloudVenuesMap] = useState<Record<string, Omit<Venue, 'courts'>>>({});
+  const [cloudCourtsList, setCloudCourtsList] = useState<Court[]>([]);
+  const [pricingRules, setPricingRules] = useState<Record<string, DynamicPricingRule>>({});
+  const [publicSlotLocks, setPublicSlotLocks] = useState<BookingSlotLock[]>([]);
+  const [userBookings, setUserBookings] = useState<Booking[]>([]);
+  const [venueOwnerBookings, setVenueOwnerBookings] = useState<Booking[]>([]);
+  const [participantsByBooking, setParticipantsByBooking] = useState<
+    Record<string, SplitParticipant[]>
+  >({});
+  const [openPlays, setOpenPlays] = useState<OpenPlaySession[]>([]);
+  const [chatMessages, setChatMessages] = useState<LobbyChatMessage[]>([]);
   const [savedDrafts, setSavedDrafts] = useState<SavedContentDraft[]>([]);
-  const [reviews, setReviews] = useState<VenueReview[]>(INITIAL_VENUE_REVIEWS);
+  const [reviews, setReviews] = useState<VenueReview[]>([]);
 
   // Active modals / drawers
   const [pendingSlotSelection, setPendingSlotSelection] = useState<SelectedSlotPayload | null>(null);
   const [activeChatSessionId, setActiveChatSessionId] = useState<string | null>(null);
   const [reviewTarget, setReviewTarget] = useState<{ booking: Booking; venue: Venue } | null>(null);
   const [viewer3DSport, setViewer3DSport] = useState<SportCategory | null>(null);
+  const [addVenueOpen, setAddVenueOpen] = useState(false);
   const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState(false);
 
-  // Listen for Google Maps Platform Demo Key quota exceeded events (Case A Defense)
+  // Live Cloud Firestore venues & courts only (zero hardcoded/mock partners)
+  const venues: Venue[] = useMemo(() => {
+    const cloudVenueEntries = Object.values(cloudVenuesMap);
+    if (cloudVenueEntries.length === 0) {
+      return [];
+    }
+
+    const courtsByVenue: Record<string, Court[]> = {};
+    for (const c of cloudCourtsList) {
+      if (!courtsByVenue[c.venueId]) courtsByVenue[c.venueId] = [];
+      courtsByVenue[c.venueId].push(c);
+    }
+
+    return cloudVenueEntries.map((cv) => ({
+      ...cv,
+      courts: courtsByVenue[cv.id] ?? [],
+    }));
+  }, [cloudVenuesMap, cloudCourtsList]);
+
+  // Combine detailed authenticated bookings (customer + venue owner) with public PII-free slot locks
+  const bookings: Booking[] = useMemo(() => {
+    const byId = new Map<string, Booking>();
+
+    for (const b of venueOwnerBookings) {
+      byId.set(b.id, {
+        ...b,
+        splitParticipants: participantsByBooking[b.id] ?? b.splitParticipants,
+      });
+    }
+    for (const b of userBookings) {
+      byId.set(b.id, {
+        ...b,
+        isUserBooking: true,
+        splitParticipants: participantsByBooking[b.id] ?? b.splitParticipants,
+      });
+    }
+
+    // Group public slot locks for slots belonging to other users so the schedule grid stays 100% conflict-free
+    const lockGroups = new Map<string, BookingSlotLock[]>();
+    for (const lock of publicSlotLocks) {
+      if (byId.has(lock.bookingId)) continue;
+      const arr = lockGroups.get(lock.bookingId) ?? [];
+      arr.push(lock);
+      lockGroups.set(lock.bookingId, arr);
+    }
+
+    for (const [bookingId, locks] of lockGroups.entries()) {
+      const first = locks[0];
+      const sortedHours = Array.from(new Set(locks.map((l) => l.hour))).sort((a, b) => a - b);
+      byId.set(bookingId, {
+        id: bookingId,
+        bookingCode: 'TERKUNCI',
+        venueId: first.venueId,
+        courtId: first.courtId,
+        date: first.date,
+        hours: sortedHours,
+        customerName:
+          first.source === 'member'
+            ? 'Member Rutin'
+            : first.source === 'walkin'
+            ? 'Tamu Walk-In'
+            : 'Pemain Terverifikasi',
+        customerPhone: 'Terlindungi',
+        source: first.source,
+        paymentMethod: 'QRIS',
+        totalPrice: 0,
+        discountApplied: 0,
+        paymentMode: 'full',
+        status: 'confirmed',
+        createdAt: 'Cloud Real-Time',
+        isUserBooking: false,
+        persistedToCloud: true,
+      });
+    }
+
+    return Array.from(byId.values());
+  }, [userBookings, venueOwnerBookings, participantsByBooking, publicSlotLocks]);
+
+  // Listen for Google Maps Platform Demo Key quota exceeded events
   useEffect(() => {
     const onQuotaExceeded = () => setGmpQuotaExceeded(true);
     window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
     return () => window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
-  }, []);
-
-  // Load public player reviews from Firestore on startup
-  useEffect(() => {
-    fetchPublicVenueReviews()
-      .then((cloudReviews) => {
-        if (cloudReviews.length === 0) return;
-        setReviews((prev) => {
-          const cloudIds = new Set(cloudReviews.map((r) => r.id));
-          return [...cloudReviews, ...prev.filter((r) => !cloudIds.has(r.id))];
-        });
-      })
-      .catch(() => {});
   }, []);
 
   // Subscribe to Firebase Auth state & load Firestore UserProfile role + saved AI content drafts
@@ -122,8 +185,8 @@ export default function App() {
       setCurrentUser(user);
       setAuthReady(true);
       if (user) {
-        if (user.emailVerified) {
-          ensureVenuesSeeded().catch(() => {});
+        if (user.emailVerified && user.email === 'winawiwid84@gmail.com') {
+          purgeSeededDemoVenues().catch(() => {});
         }
         fetchUserProfile(user.uid)
           .then((profile) => {
@@ -138,16 +201,17 @@ export default function App() {
           .catch(() => {});
       } else {
         setUserProfile(null);
+        setUserBookings([]);
+        setVenueOwnerBookings([]);
+        setParticipantsByBooking({});
+        setSavedDrafts([]);
       }
     });
     return () => unsub();
   }, []);
 
-  // Live Firestore real-time synchronization for authenticated users
+  // Live PUBLIC Firestore subscriptions (Venues, Courts, Global Slot Locks, Open Plays, Reviews)
   useEffect(() => {
-    if (!authReady || !currentUser) return;
-
-    // 1. Live Dynamic Pricing synced from Firestore `venues`
     const publicVenuesQuery = query(
       collection(db, 'venues'),
       where('isPublic', '==', true)
@@ -155,82 +219,241 @@ export default function App() {
     const unsubVenues = onSnapshot(
       publicVenuesQuery,
       (snap) => {
-        if (snap.empty) return;
-        setPricingRules((prev) => {
-          const next = { ...prev };
-          snap.forEach((docSnap) => {
-            const d = docSnap.data();
-            next[docSnap.id] = {
-              venueId: docSnap.id,
-              enabled: Boolean(d.pricingEnabled),
-              days: Array.isArray(d.pricingDays) ? d.pricingDays : [1, 2, 3, 4, 5],
-              startHour: Number(d.pricingStartHour ?? 9),
-              endHour: Number(d.pricingEndHour ?? 15),
-              discountPercent: Number(d.pricingDiscountPercent ?? 20),
-              label: String(d.pricingLabel ?? 'Promo Off-Peak Siang'),
-            };
-          });
-          return next;
+        const nextVenues: Record<string, Omit<Venue, 'courts'>> = {};
+        const nextPricing: Record<string, DynamicPricingRule> = {};
+        snap.forEach((docSnap) => {
+          const d = docSnap.data();
+          nextVenues[docSnap.id] = {
+            id: docSnap.id,
+            name: String(d.name || ''),
+            sport: (d.sport as SportCategory) || 'Badminton',
+            area: String(d.area || 'Bandung'),
+            address: String(d.address || ''),
+            rating: Number(d.rating ?? 4.8),
+            reviewCount: Number(d.reviewCount ?? 0),
+            imageUrl: String(d.imageUrl || '/assets/courtsync/venue-badminton.jpg'),
+            openHour: Number(d.openHour ?? 8),
+            closeHour: Number(d.closeHour ?? 22),
+            facilities: Array.isArray(d.facilities) ? d.facilities.map(String) : [],
+            bankAccount: String(d.bankAccount || ''),
+            ownerUid: d.ownerUid ? String(d.ownerUid) : undefined,
+          };
+          nextPricing[docSnap.id] = {
+            venueId: docSnap.id,
+            enabled: Boolean(d.pricingEnabled),
+            days: Array.isArray(d.pricingDays) ? d.pricingDays.map(Number) : [1, 2, 3, 4, 5],
+            startHour: Number(d.pricingStartHour ?? 9),
+            endHour: Number(d.pricingEndHour ?? 15),
+            discountPercent: Number(d.pricingDiscountPercent ?? 20),
+            label: String(d.pricingLabel ?? 'Promo Off-Peak Siang'),
+          };
         });
+        setCloudVenuesMap(nextVenues);
+        setPricingRules(nextPricing);
       },
       (error) => {
         handleFirestoreError(error, OperationType.LIST, 'venues');
       }
     );
 
-    // 2. Live user bookings synced from Firestore `bookings` (owner-scoped query matching security rules)
+    const publicCourtsQuery = query(
+      collection(db, 'courts'),
+      where('isPublic', '==', true)
+    );
+    const unsubCourts = onSnapshot(
+      publicCourtsQuery,
+      (snap) => {
+        const list: Court[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            venueId: String(d.venueId || ''),
+            name: String(d.name || 'Lapangan'),
+            surface: String(d.surface || 'Standar'),
+            indoor: Boolean(d.indoor),
+            basePricePerHour: Number(d.basePricePerHour ?? 100000),
+            ownerUid: d.ownerUid ? String(d.ownerUid) : undefined,
+          };
+        });
+        setCloudCourtsList(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'courts');
+      }
+    );
+
+    const publicSlotsQuery = query(
+      collection(db, 'booking_slots'),
+      where('hour', '>=', 8),
+      where('hour', '<=', 21)
+    );
+    const unsubSlots = onSnapshot(
+      publicSlotsQuery,
+      (snap) => {
+        const locks: BookingSlotLock[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            venueId: String(d.venueId || ''),
+            courtId: String(d.courtId || ''),
+            date: String(d.date || ''),
+            hour: Number(d.hour ?? 8),
+            bookingId: String(d.bookingId || ''),
+            source: (d.source as BookingSource) || 'online',
+            ownerUid: String(d.ownerUid || ''),
+          };
+        });
+        setPublicSlotLocks(locks);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'booking_slots');
+      }
+    );
+
+    const publicOpenPlaysQuery = query(
+      collection(db, 'open_plays'),
+      where('status', 'in', ['open', 'full'])
+    );
+    const unsubOpenPlays = onSnapshot(
+      publicOpenPlaysQuery,
+      (snap) => {
+        const uid = auth.currentUser?.uid;
+        const sessions: OpenPlaySession[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          const participantUids = Array.isArray(d.participantUids)
+            ? d.participantUids.map(String)
+            : [];
+          const participantNames = Array.isArray(d.participantNames)
+            ? d.participantNames.map(String)
+            : [];
+          return {
+            id: docSnap.id,
+            bookingId: d.bookingId ? String(d.bookingId) : undefined,
+            title: String(d.title || 'Sesi Mabar Bandung'),
+            sport: (d.sport as SportCategory) || 'Badminton',
+            venueId: String(d.venueId || ''),
+            courtId: String(d.courtId || ''),
+            date: String(d.date || ''),
+            hours: Array.isArray(d.hours) ? d.hours.map(Number) : [],
+            hostName: String(d.hostName || 'Host'),
+            skillLevel: (d.skillLevel as SkillLevel) || 'Menengah',
+            maxPlayers: Number(d.maxPlayers ?? 8),
+            currentPlayers: Number(d.currentPlayers ?? participantNames.length),
+            costPerPerson: Number(d.costPerPerson ?? 25000),
+            description: String(d.description || ''),
+            participants: participantNames,
+            participantUids,
+            status: (d.status as 'open' | 'full' | 'closed') || 'open',
+            joinedByCurrentUser: Boolean(uid && participantUids.includes(uid)),
+          };
+        });
+        setOpenPlays(sessions.reverse());
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'open_plays');
+      }
+    );
+
+    const publicReviewsQuery = query(
+      collection(db, 'reviews'),
+      where('isPublic', '==', true)
+    );
+    const unsubReviews = onSnapshot(
+      publicReviewsQuery,
+      (snap) => {
+        const list: VenueReview[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            venueId: String(d.venueId || ''),
+            bookingId: String(d.bookingId || ''),
+            bookingCode: String(d.bookingCode || ''),
+            courtName: String(d.courtName || ''),
+            reviewerName: String(d.reviewerName || 'Pemain Bandung'),
+            rating: Math.min(5, Math.max(1, Number(d.rating || 5))),
+            comment: String(d.comment || ''),
+            tags: Array.isArray(d.tags) ? d.tags.map(String) : [],
+            playedDate: String(d.playedDate || ''),
+            createdAtLabel: 'Tersimpan di Cloud',
+            persistedToCloud: true,
+          };
+        });
+        setReviews(list.reverse());
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'reviews');
+      }
+    );
+
+    return () => {
+      unsubVenues();
+      unsubCourts();
+      unsubSlots();
+      unsubOpenPlays();
+      unsubReviews();
+    };
+  }, [currentUser?.uid]);
+
+  // Live AUTHENTICATED Firestore subscriptions (Own Bookings, Owned-Venue Bookings, Split Bill Participants)
+  useEffect(() => {
+    if (!authReady || !currentUser) return;
+
+    const mapBookingDoc = (docSnap: { id: string; data: () => Record<string, unknown> }): Booking => {
+      const d = docSnap.data();
+      return {
+        id: docSnap.id,
+        bookingCode: String(d.bookingCode),
+        venueId: String(d.venueId),
+        courtId: String(d.courtId),
+        date: String(d.date),
+        hours: Array.isArray(d.hours) ? d.hours.map(Number) : [],
+        customerName: String(d.customerName),
+        customerPhone: String(d.customerPhone),
+        source: d.source as BookingSource,
+        paymentMethod: d.paymentMethod as PaymentMethod,
+        totalPrice: Number(d.totalPrice),
+        discountApplied: Number(d.discountApplied ?? 0),
+        paymentMode: d.paymentMode === 'split' ? 'split' : 'full',
+        splitLink: d.splitLink ? String(d.splitLink) : undefined,
+        status: d.status as Booking['status'],
+        createdAt: 'Tersinkronisasi Cloud',
+        ownerUid: d.ownerUid ? String(d.ownerUid) : undefined,
+        venueOwnerUid: d.venueOwnerUid ? String(d.venueOwnerUid) : undefined,
+        checkedInAt: d.checkedInAt ? String(d.checkedInAt) : undefined,
+        openPlayId: d.openPlayId ? String(d.openPlayId) : undefined,
+        notes: d.notes ? String(d.notes) : undefined,
+        persistedToCloud: true,
+      };
+    };
+
     const userBookingsQuery = query(
       collection(db, 'bookings'),
       where('ownerUid', '==', currentUser.uid)
     );
-    const unsubBookings = onSnapshot(
+    const unsubUserBookings = onSnapshot(
       userBookingsQuery,
       (snap) => {
-        if (snap.empty) return;
-        const remoteBookings: Booking[] = snap.docs.map((docSnap) => {
-          const d = docSnap.data();
-          return {
-            id: docSnap.id,
-            bookingCode: String(d.bookingCode),
-            venueId: String(d.venueId),
-            courtId: String(d.courtId),
-            date: String(d.date),
-            hours: Array.isArray(d.hours) ? d.hours.map(Number) : [],
-            customerName: String(d.customerName),
-            customerPhone: String(d.customerPhone),
-            source: d.source as BookingSource,
-            paymentMethod: d.paymentMethod as PaymentMethod,
-            totalPrice: Number(d.totalPrice),
-            discountApplied: Number(d.discountApplied ?? 0),
-            paymentMode: d.paymentMode === 'split' ? 'split' : 'full',
-            splitLink: d.splitLink ? String(d.splitLink) : undefined,
-            status: d.status,
-            createdAt: 'Tersinkronisasi Cloud',
-            isUserBooking: true,
-            openPlayId: d.openPlayId ? String(d.openPlayId) : undefined,
-            notes: d.notes ? String(d.notes) : undefined,
-          };
-        });
-
-        setBookings((prev) => {
-          const remoteIds = new Set(remoteBookings.map((r) => r.id));
-          const preserved = prev.filter((b) => !remoteIds.has(b.id));
-          // Merge splitParticipants from local state if already populated
-          const mergedRemote = remoteBookings.map((rb) => {
-            const existing = prev.find((p) => p.id === rb.id);
-            return existing?.splitParticipants
-              ? { ...rb, splitParticipants: existing.splitParticipants }
-              : rb;
-          });
-          return [...mergedRemote, ...preserved];
-        });
+        setUserBookings(snap.docs.map(mapBookingDoc).reverse());
       },
       (error) => {
         handleFirestoreError(error, OperationType.LIST, 'bookings');
       }
     );
 
-    // 3. Live Split Bill participant updates from Firestore `booking_participants`
+    const venueBookingsQuery = query(
+      collection(db, 'bookings'),
+      where('venueOwnerUid', '==', currentUser.uid)
+    );
+    const unsubVenueBookings = onSnapshot(
+      venueBookingsQuery,
+      (snap) => {
+        setVenueOwnerBookings(snap.docs.map(mapBookingDoc).reverse());
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'bookings');
+      }
+    );
+
     const participantsQuery = query(
       collection(db, 'booking_participants'),
       where('ownerUid', '==', currentUser.uid)
@@ -238,7 +461,6 @@ export default function App() {
     const unsubParticipants = onSnapshot(
       participantsQuery,
       (snap) => {
-        if (snap.empty) return;
         const grouped: Record<string, SplitParticipant[]> = {};
         snap.docs.forEach((docSnap) => {
           const d = docSnap.data();
@@ -253,10 +475,7 @@ export default function App() {
             isHost: Boolean(d.isHost),
           });
         });
-
-        setBookings((prev) =>
-          prev.map((b) => (grouped[b.id] ? { ...b, splitParticipants: grouped[b.id] } : b))
-        );
+        setParticipantsByBooking(grouped);
       },
       (error) => {
         handleFirestoreError(error, OperationType.LIST, 'booking_participants');
@@ -264,11 +483,59 @@ export default function App() {
     );
 
     return () => {
-      unsubVenues();
-      unsubBookings();
+      unsubUserBookings();
+      unsubVenueBookings();
       unsubParticipants();
     };
   }, [authReady, currentUser]);
+
+  // Live Firestore Lobby Chat stream for the active Open Play session
+  useEffect(() => {
+    if (!activeChatSessionId || !currentUser) {
+      setChatMessages([]);
+      return;
+    }
+
+    const msgQuery = query(
+      collection(db, 'open_plays', activeChatSessionId, 'messages'),
+      where('sessionId', '==', activeChatSessionId)
+    );
+
+    const unsubMessages = onSnapshot(
+      msgQuery,
+      (snap) => {
+        const items = snap.docs
+          .map((docSnap) => {
+            const d = docSnap.data();
+            const ts = d.createdAt as { toDate?: () => Date } | undefined;
+            const dateObj = ts?.toDate ? ts.toDate() : null;
+            return {
+              sortMs: dateObj ? dateObj.getTime() : Date.now(),
+              msg: {
+                id: docSnap.id,
+                sessionId: String(d.sessionId || activeChatSessionId),
+                sender: String(d.senderName || 'Pemain'),
+                text: String(d.text || ''),
+                timestamp: dateObj
+                  ? dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+                  : 'Baru saja',
+                isCurrentUser: String(d.senderUid || '') === currentUser.uid && !d.isSystem,
+                isSystem: Boolean(d.isSystem),
+              } as LobbyChatMessage,
+            };
+          })
+          .sort((a, b) => a.sortMs - b.sortMs)
+          .map((x) => x.msg);
+
+        setChatMessages(items);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, `open_plays/${activeChatSessionId}/messages`);
+      }
+    );
+
+    return () => unsubMessages();
+  }, [activeChatSessionId, currentUser]);
 
   const handleAuthComplete = (profile: UserProfile) => {
     setUserProfile(profile);
@@ -287,6 +554,9 @@ export default function App() {
       await signOut(auth);
       setUserProfile(null);
       setSavedDrafts([]);
+      setUserBookings([]);
+      setVenueOwnerBookings([]);
+      setParticipantsByBooking({});
       setAuthScreen('none');
     } catch (error) {
       console.error('Sign out failed:', error);
@@ -310,27 +580,12 @@ export default function App() {
         return;
       }
     }
-    const localDraft: SavedContentDraft = {
-      id: `local-draft-${Date.now()}`,
-      roleMode: params.roleMode,
-      venueId: params.venueId,
-      platform: params.platform,
-      tone: params.tone,
-      prompt: params.prompt,
-      mediaType: params.mediaType,
-      mediaFileName: params.mediaFileName,
-      content: params.content,
-      createdAtLabel: 'Sesi lokal',
-      persistedToCloud: false,
-    };
-    setSavedDrafts((prev) => [localDraft, ...prev]);
+    setAuthScreen('login');
   };
 
   const handleDeleteContentDraft = (draftId: string) => {
     setSavedDrafts((prev) => prev.filter((d) => d.id !== draftId));
-    if (!draftId.startsWith('local-draft-')) {
-      deleteContentDraftFromFirestore(draftId).catch(() => {});
-    }
+    deleteContentDraftFromFirestore(draftId).catch(() => {});
   };
 
   const handleSubmitVenueReview = async (payload: {
@@ -344,33 +599,16 @@ export default function App() {
     tags: string[];
     playedDate: string;
   }) => {
-    if (currentUser && currentUser.emailVerified) {
-      const saved = await createVenueReviewToFirestore(payload);
-      if (saved) {
-        setReviews((prev) => [saved, ...prev]);
-        return;
-      }
+    if (!currentUser || !currentUser.emailVerified) {
+      setAuthScreen('login');
+      return;
     }
-    const localReview: VenueReview = {
-      id: `local-rev-${Date.now()}`,
-      venueId: payload.venueId,
-      bookingId: payload.bookingId,
-      bookingCode: payload.bookingCode,
-      courtName: payload.courtName,
-      reviewerName: payload.reviewerName,
-      rating: payload.rating,
-      comment: payload.comment,
-      tags: payload.tags,
-      playedDate: payload.playedDate,
-      createdAtLabel: 'Baru saja',
-      persistedToCloud: false,
-    };
-    setReviews((prev) => [localReview, ...prev]);
+    await createVenueReviewToFirestore(payload);
   };
 
   const userTicketsCount = useMemo(
-    () => bookings.filter((b) => b.isUserBooking && b.status !== 'cancelled').length,
-    [bookings]
+    () => userBookings.filter((b) => b.status !== 'cancelled').length,
+    [userBookings]
   );
 
   // Unified Anti-Double-Booking conflict check
@@ -384,8 +622,8 @@ export default function App() {
     );
   };
 
-  // B2C Booking confirmation handler (syncs atomically to Firestore + Express /api/bookings)
-  const handleConfirmBooking = (params: {
+  // Real Atomic Cloud Firestore Booking Confirmation
+  const handleConfirmBooking = async (params: {
     bookingCode: string;
     venueId: string;
     courtId: string;
@@ -406,17 +644,24 @@ export default function App() {
       skillLevel: SkillLevel;
       description: string;
     };
-  }): { ok: boolean; error?: string; booking?: Booking } => {
+  }): Promise<{ ok: boolean; error?: string; booking?: Booking }> => {
+    if (!currentUser || !currentUser.emailVerified) {
+      return {
+        ok: false,
+        error: 'Masuk dengan akun Google terverifikasi terlebih dahulu agar booking tersimpan resmi di Cloud.',
+      };
+    }
+
     const conflict = findConflict(params.courtId, params.date, params.hours);
     if (conflict) {
       const clashHour = params.hours.find((h) => conflict.hours.includes(h)) ?? params.hours[0];
       return {
         ok: false,
-        error: `Maaf, jam ${formatSingleHour(clashHour)} WIB baru saja dikunci oleh pemesan lain (${conflict.bookingCode}). Pilih slot jam lain yang masih tersedia.`,
+        error: `Maaf, jam ${formatSingleHour(clashHour)} WIB sudah dikunci oleh pemesan lain. Pilih slot jam lain yang masih tersedia.`,
       };
     }
 
-    const venue = BANDUNG_VENUES.find((v) => v.id === params.venueId);
+    const venue = venues.find((v) => v.id === params.venueId);
     const newBookingId = `bk-${Date.now()}`;
     const newOpenPlayId = params.publishOpenPlay ? `op-${Date.now()}` : undefined;
 
@@ -437,9 +682,12 @@ export default function App() {
       splitLink: params.splitLink,
       splitParticipants: params.splitParticipants,
       status: 'confirmed',
-      createdAt: 'Baru saja',
+      createdAt: 'Tersinkronisasi Cloud',
       isUserBooking: true,
+      ownerUid: currentUser.uid,
+      venueOwnerUid: venue?.ownerUid,
       openPlayId: newOpenPlayId,
+      persistedToCloud: true,
     };
 
     let createdOpenPlay: OpenPlaySession | undefined;
@@ -462,28 +710,22 @@ export default function App() {
         costPerPerson,
         description: params.openPlayConfig.description,
         participants: [params.customerName],
+        participantUids: [currentUser.uid],
+        status: 'open',
         joinedByCurrentUser: true,
       };
-      setOpenPlays((prev) => [createdOpenPlay!, ...prev]);
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: `msg-${Date.now()}`,
-          sessionId: newOpenPlayId,
-          sender: 'Sistem CourtSync',
-          text: `Sesi Open Play "${createdOpenPlay!.title}" berhasil dipublikasikan! Lapangan sudah dikunci dan siap menerima pemain Bandung lainnya.`,
-          timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
-          isSystem: true,
-        },
-      ]);
     }
 
-    setBookings((prev) => [newBooking, ...prev]);
-
-    // Persist atomically to Firestore when authenticated + notify Express POST /api/bookings
-    createAtomicFirestoreBooking(newBooking, createdOpenPlay).catch((err) =>
-      console.error('Atomic booking sync error:', err)
+    const txResult = await createAtomicFirestoreBooking(
+      newBooking,
+      createdOpenPlay,
+      venue?.ownerUid
     );
+    if (!txResult.ok) {
+      return { ok: false, error: txResult.error };
+    }
+
+    // Notify Express REST API for real-time webhook/SSE tracking
     fetch('/api/bookings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -506,25 +748,12 @@ export default function App() {
     return { ok: true, booking: newBooking };
   };
 
-  // Mark Split Bill participant paid via Express Midtrans/Xendit webhook + Firestore sync
-  const handleSimulateParticipantPay = (bookingId: string, participantId: string) => {
-    const nowTime = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+  // Real Split Bill participant payment confirmation via webhook + Firestore
+  const handleMarkParticipantPaid = (bookingId: string, participantId: string) => {
     const targetBooking = bookings.find((b) => b.id === bookingId);
     const participantIndex =
       targetBooking?.splitParticipants?.findIndex((p) => p.id === participantId) ?? 0;
     const participant = targetBooking?.splitParticipants?.[participantIndex];
-
-    setBookings((prev) =>
-      prev.map((b) => {
-        if (b.id !== bookingId || !b.splitParticipants) return b;
-        return {
-          ...b,
-          splitParticipants: b.splitParticipants.map((p) =>
-            p.id === participantId ? { ...p, paid: true, paidAt: nowTime } : p
-          ),
-        };
-      })
-    );
 
     if (targetBooking && participant) {
       triggerSplitBillPaymentWebhook({
@@ -538,119 +767,29 @@ export default function App() {
     }
   };
 
-  // Join an Open Play (Mabar) session
-  const handleJoinOpenPlay = (
+  // Real Transactional Join Open Play (Mabar)
+  const handleJoinOpenPlay = async (
     sessionId: string,
     playerName: string,
     paymentMethod: PaymentMethod
-  ) => {
+  ): Promise<{ ok: boolean; error?: string }> => {
     const target = openPlays.find((s) => s.id === sessionId);
-    if (!target || target.joinedByCurrentUser || target.currentPlayers >= target.maxPlayers) return;
-
-    setOpenPlays((prev) =>
-      prev.map((s) => {
-        if (s.id !== sessionId) return s;
-        return {
-          ...s,
-          currentPlayers: s.currentPlayers + 1,
-          participants: [...s.participants, playerName],
-          joinedByCurrentUser: true,
-        };
-      })
-    );
-
-    const ticketBooking: Booking = {
-      id: `bk-mabar-${Date.now()}`,
-      bookingCode: generateBookingCode(),
-      venueId: target.venueId,
-      courtId: target.courtId,
-      date: target.date,
-      hours: target.hours,
-      customerName: `${playerName} (Peserta Mabar)`,
-      customerPhone: '0812-2345-6789',
-      source: 'online',
-      paymentMethod,
-      totalPrice: target.costPerPerson,
-      discountApplied: 0,
-      paymentMode: 'full',
-      status: 'confirmed',
-      createdAt: 'Baru saja',
-      isUserBooking: true,
-      openPlayId: sessionId,
-    };
-
-    setBookings((prev) => {
-      if (target.bookingId) {
-        const hasMainBooking = prev.some((b) => b.id === target.bookingId);
-        if (hasMainBooking) {
-          return prev.map((b) =>
-            b.id === target.bookingId ? { ...b, isUserBooking: true } : b
-          );
-        }
-      }
-      return [ticketBooking, ...prev];
-    });
-
-    const nowTime = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `msg-join-${Date.now()}`,
-        sessionId,
-        sender: 'Sistem CourtSync',
-        text: `${playerName} resmi bergabung & mengunci 1 slot lewat ${paymentMethod}.`,
-        timestamp: nowTime,
-        isSystem: true,
-      },
-    ]);
+    if (!target) return { ok: false, error: 'Sesi Open Play tidak ditemukan.' };
+    return joinOpenPlayInFirestore(target, playerName, paymentMethod);
   };
 
-  // Send Lobby Chat message + persist to Firestore + simulated teammate reply
+  // Real Firestore Lobby Chat message (no fake bot replies)
   const handleSendChatMessage = (sessionId: string, text: string) => {
-    const nowTime = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-    const session = openPlays.find((s) => s.id === sessionId);
-    const displayName = userProfile?.displayName || currentUser?.displayName || 'Kamu';
-
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `msg-${Date.now()}`,
-        sessionId,
-        sender: displayName,
-        text,
-        timestamp: nowTime,
-        isCurrentUser: true,
-      },
-    ]);
-
-    persistLobbyMessage(sessionId, displayName, text).catch(() => {});
-
-    if (session) {
-      const responder =
-        session.participants.find((p) => p !== displayName && p !== 'Andi Saputra') ??
-        session.hostName;
-      const replyText =
-        SIMULATED_REPLIES[Math.floor(Math.random() * SIMULATED_REPLIES.length)];
-      setTimeout(() => {
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            id: `msg-rep-${Date.now()}`,
-            sessionId,
-            sender: responder,
-            text: replyText,
-            timestamp: new Date().toLocaleTimeString('id-ID', {
-              hour: '2-digit',
-              minute: '2-digit',
-            }),
-          },
-        ]);
-      }, 950);
+    if (!currentUser || !currentUser.emailVerified) {
+      setAuthScreen('login');
+      return;
     }
+    const displayName = userProfile?.displayName || currentUser.displayName || 'Pemain';
+    persistLobbyMessage(sessionId, displayName, text).catch(() => {});
   };
 
-  // B2B Manual Walk-In / Member Booking
-  const handleAddManualBooking = (params: {
+  // Real B2B Manual Walk-In / Member Booking persisted atomically to Firestore
+  const handleAddManualBooking = async (params: {
     venueId: string;
     courtId: string;
     date: string;
@@ -660,7 +799,14 @@ export default function App() {
     source: BookingSource;
     totalPrice: number;
     notes?: string;
-  }): { ok: boolean; error?: string } => {
+  }): Promise<{ ok: boolean; error?: string }> => {
+    if (!currentUser || !currentUser.emailVerified) {
+      return {
+        ok: false,
+        error: 'Masuk dengan akun Mitra GOR terlebih dahulu untuk menyimpan jadwal ke Cloud.',
+      };
+    }
+
     const conflict = findConflict(params.courtId, params.date, params.hours);
     if (conflict) {
       return {
@@ -669,6 +815,7 @@ export default function App() {
       };
     }
 
+    const venue = venues.find((v) => v.id === params.venueId);
     const newBooking: Booking = {
       id: `bk-b2b-${Date.now()}`,
       bookingCode: generateBookingCode(),
@@ -685,12 +832,21 @@ export default function App() {
       paymentMode: 'full',
       status: 'confirmed',
       createdAt: 'Input Kasir GOR',
+      ownerUid: currentUser.uid,
+      venueOwnerUid: venue?.ownerUid ?? currentUser.uid,
       notes: params.notes,
+      persistedToCloud: true,
     };
 
-    setBookings((prev) => [newBooking, ...prev]);
+    const txResult = await createAtomicFirestoreBooking(
+      newBooking,
+      undefined,
+      venue?.ownerUid
+    );
+    if (!txResult.ok) {
+      return { ok: false, error: txResult.error };
+    }
 
-    createAtomicFirestoreBooking(newBooking).catch(() => {});
     fetch('/api/bookings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -700,10 +856,16 @@ export default function App() {
     return { ok: true };
   };
 
-  const handleCancelBooking = (bookingId: string) => {
-    setBookings((prev) =>
-      prev.map((b) => (b.id === bookingId ? { ...b, status: 'cancelled' } : b))
-    );
+  // Real Firestore cancellation + atomic slot lock release
+  const handleCancelBooking = async (bookingId: string) => {
+    const target = bookings.find((b) => b.id === bookingId);
+    if (!target) return;
+    await cancelBookingInFirestore(target);
+  };
+
+  // Real Firestore Cashier Check-In
+  const handleCheckInBooking = async (bookingId: string) => {
+    return checkInBookingInFirestore(bookingId);
   };
 
   const handleUpdatePricingRule = (venueId: string, nextRule: DynamicPricingRule) => {
@@ -711,24 +873,35 @@ export default function App() {
       ...prev,
       [venueId]: nextRule,
     }));
-    const venue = BANDUNG_VENUES.find((v) => v.id === venueId);
+    const venue = venues.find((v) => v.id === venueId);
     if (venue) {
       persistVenueDynamicPricing(venue, nextRule).catch(() => {});
     }
   };
 
+  const handleDeleteVenue = async (venueId: string) => {
+    return deleteVenueWithCourtsInFirestore(venueId);
+  };
+
+  const handleClearAllVenues = async () => {
+    return deleteAllVenuesInFirestore();
+  };
+
   const activeChatSession = openPlays.find((s) => s.id === activeChatSessionId) ?? null;
   const activeChatVenue = activeChatSession
-    ? BANDUNG_VENUES.find((v) => v.id === activeChatSession.venueId) ?? null
+    ? venues.find((v) => v.id === activeChatSession.venueId) ?? null
     : null;
+
+  const isVerifiedSignedIn = Boolean(currentUser && currentUser.emailVerified);
+  const isAdmin = Boolean(isVerifiedSignedIn && currentUser?.email === 'winawiwid84@gmail.com');
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-[#0F172A]">
-      {/* Mandatory Google Maps Platform Demo Key Quota Banner */}
+      {/* Mandatory Google Maps Platform Quota Banner */}
       {gmpQuotaExceeded && (
         <div
           role="alert"
-          className="sticky top-0 z-50 bg-amber-100 border-b border-amber-300 text-amber-950 px-4 py-2.5 text-xs flex items-center justify-between gap-3"
+          className="sticky top-0 z-50 bg-amber-100 border-b border-amber-300 text-amber-950 px-4 py-2.5 text-xs flex items-center justify-between gap-3 print:hidden"
         >
           <p className="font-medium">
             Google Maps API quota exceeded — switch to your own Google Cloud API key to continue:{' '}
@@ -786,12 +959,12 @@ export default function App() {
           />
         </main>
       ) : (
-        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 pt-6 sm:pt-8">
+        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 pt-6 sm:pt-8 print:max-w-none print:px-0 print:pt-0">
           {mode === 'B2C' ? (
             <>
               {b2cTab === 'explore' && (
                 <B2CVenueExplorer
-                  venues={BANDUNG_VENUES}
+                  venues={venues}
                   bookings={bookings}
                   reviews={reviews}
                   pricingRules={pricingRules}
@@ -799,6 +972,11 @@ export default function App() {
                   onJumpToMabar={() => setB2CTab('mabar')}
                   onOpen3DViewer={(sport) => setViewer3DSport(sport)}
                   onGoToTicketsForReview={() => setB2CTab('tickets')}
+                  onOpenPartnerOnboarding={() => setAddVenueOpen(true)}
+                  onOpenProposal={() => {
+                    setMode('B2B');
+                    setB2BTab('proposal');
+                  }}
                   openPlayCount={openPlays.length}
                 />
               )}
@@ -806,9 +984,18 @@ export default function App() {
               {b2cTab === 'mabar' && (
                 <OpenPlayFeed
                   sessions={openPlays}
-                  venues={BANDUNG_VENUES}
+                  venues={venues}
+                  isSignedIn={isVerifiedSignedIn}
+                  defaultPlayerName={userProfile?.displayName || currentUser?.displayName || undefined}
+                  onPromptLogin={() => setAuthScreen('login')}
                   onJoinSession={handleJoinOpenPlay}
-                  onOpenChat={(id) => setActiveChatSessionId(id)}
+                  onOpenChat={(id) => {
+                    if (!isVerifiedSignedIn) {
+                      setAuthScreen('login');
+                      return;
+                    }
+                    setActiveChatSessionId(id);
+                  }}
                   onCreateFromExplore={() => setB2CTab('explore')}
                 />
               )}
@@ -816,7 +1003,7 @@ export default function App() {
               {b2cTab === 'studio' && (
                 <AIContentStudio
                   mode="B2C"
-                  venues={BANDUNG_VENUES}
+                  venues={venues}
                   savedDrafts={savedDrafts}
                   isSignedIn={Boolean(currentUser)}
                   onSaveDraft={handleSaveContentDraft}
@@ -828,11 +1015,14 @@ export default function App() {
               {b2cTab === 'tickets' && (
                 <MyTicketsView
                   bookings={bookings}
-                  venues={BANDUNG_VENUES}
+                  venues={venues}
                   reviews={reviews}
-                  onSimulateParticipantPay={handleSimulateParticipantPay}
+                  isSignedIn={isVerifiedSignedIn}
+                  onPromptLogin={() => setAuthScreen('login')}
+                  onMarkParticipantPaid={handleMarkParticipantPaid}
                   onOpenMabarChat={(id) => setActiveChatSessionId(id)}
                   onOpenReview={(booking, venue) => setReviewTarget({ booking, venue })}
+                  onCancelBooking={handleCancelBooking}
                   onExploreClick={() => setB2CTab('explore')}
                 />
               )}
@@ -840,23 +1030,37 @@ export default function App() {
           ) : b2bTab === 'studio' ? (
             <AIContentStudio
               mode="B2B"
-              venues={BANDUNG_VENUES}
+              venues={venues}
               savedDrafts={savedDrafts}
               isSignedIn={Boolean(currentUser)}
               onSaveDraft={handleSaveContentDraft}
               onDeleteDraft={handleDeleteContentDraft}
               onPromptLogin={() => setAuthScreen('login')}
             />
+          ) : b2bTab === 'proposal' ? (
+            <MitraProposalPage
+              venues={venues}
+              onRegisterMitra={() => setAuthScreen('register')}
+              onGoToCalendar={() => setB2BTab('calendar')}
+            />
           ) : (
             <B2BOwnerDashboard
-              venues={BANDUNG_VENUES}
+              venues={venues}
               bookings={bookings}
               reviews={reviews}
               pricingRules={pricingRules}
               activeTab={b2bTab}
               onTabChange={setB2BTab}
+              isSignedIn={isVerifiedSignedIn}
+              currentUserUid={currentUser?.uid}
+              isAdmin={isAdmin}
+              onPromptLogin={() => setAuthScreen('login')}
+              onOpenAddVenue={() => setAddVenueOpen(true)}
+              onDeleteVenue={handleDeleteVenue}
+              onClearAllVenues={handleClearAllVenues}
               onAddManualBooking={handleAddManualBooking}
               onCancelBooking={handleCancelBooking}
+              onCheckInBooking={handleCheckInBooking}
               onUpdatePricingRule={handleUpdatePricingRule}
               onPreviewInB2C={() => {
                 setMode('B2C');
@@ -868,12 +1072,12 @@ export default function App() {
       )}
 
       {/* Clean Minimal Footer */}
-      <footer className="border-t border-slate-200 bg-white mt-auto">
+      <footer className="border-t border-slate-200 bg-white mt-auto print:hidden">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500">
           <p className="font-medium text-slate-700">
             CourtSync (MainBareng) · Ekosistem Booking &amp; Komunitas Olahraga Bandung
           </p>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center justify-center gap-4">
             <button
               type="button"
               onClick={() => {
@@ -907,6 +1111,17 @@ export default function App() {
             >
               Portal Mitra GOR
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthScreen('none');
+                setMode('B2B');
+                setB2BTab('proposal');
+              }}
+              className="font-semibold text-amber-700 hover:text-amber-800 transition-colors"
+            >
+              Proposal Mitra GOR
+            </button>
             {!currentUser && (
               <button
                 type="button"
@@ -924,15 +1139,38 @@ export default function App() {
       {pendingSlotSelection && (
         <BookingModal
           selection={pendingSlotSelection}
+          isSignedIn={isVerifiedSignedIn}
+          defaultName={userProfile?.displayName || currentUser?.displayName || undefined}
+          defaultPhone={userProfile?.phone || undefined}
+          onPromptLogin={() => {
+            setPendingSlotSelection(null);
+            setAuthScreen('login');
+          }}
           onClose={() => setPendingSlotSelection(null)}
           onConfirmBooking={handleConfirmBooking}
-          onSimulateParticipantPay={handleSimulateParticipantPay}
+          onMarkParticipantPaid={handleMarkParticipantPaid}
           onOpenMabarChat={(id) => setActiveChatSessionId(id)}
           onGoToTickets={() => setB2CTab('tickets')}
         />
       )}
 
-      {/* Temporary Lobby Chat Drawer */}
+      {/* Mitra GOR Real Venue Onboarding Modal */}
+      {addVenueOpen && (
+        <AddVenueModal
+          isSignedIn={isVerifiedSignedIn}
+          onPromptLogin={() => {
+            setAddVenueOpen(false);
+            setAuthScreen('login');
+          }}
+          onClose={() => setAddVenueOpen(false)}
+          onVenueCreated={() => {
+            setMode('B2B');
+            setB2BTab('calendar');
+          }}
+        />
+      )}
+
+      {/* Real-Time Cloud Lobby Chat Drawer */}
       <LobbyChatDrawer
         session={activeChatSession}
         venue={activeChatVenue}
@@ -947,7 +1185,7 @@ export default function App() {
           booking={reviewTarget.booking}
           venue={reviewTarget.venue}
           defaultReviewerName={userProfile?.displayName || currentUser?.displayName || ''}
-          isSignedIn={Boolean(currentUser && currentUser.emailVerified)}
+          isSignedIn={isVerifiedSignedIn}
           onClose={() => setReviewTarget(null)}
           onSubmitReview={handleSubmitVenueReview}
         />
@@ -957,7 +1195,7 @@ export default function App() {
       {viewer3DSport && (
         <Venue3DViewerModal
           initialSport={viewer3DSport}
-          venues={BANDUNG_VENUES}
+          venues={venues}
           onClose={() => setViewer3DSport(null)}
           onBookVenue={() => {
             setAuthScreen('none');
